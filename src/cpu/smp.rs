@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use crate::{arch::x86_64::apic::LOCAL_APIC_TIMER, cpu::topology::TOPOLOGY};
+use crate::cpu::topology::TOPOLOGY;
 
 #[derive(Debug)]
 pub struct CpuLocalState {
@@ -24,7 +24,6 @@ impl CpuLocalState {
 
     pub fn tick(&self) {
         self.ticks.fetch_add(1, Ordering::Relaxed);
-        LOCAL_APIC_TIMER.tick();
     }
 }
 
@@ -37,11 +36,10 @@ pub fn init() {
     let bsp = &*BSP_CPU_STATE;
     bsp.set_current_task(0);
     bsp.tick();
-    LOCAL_APIC_TIMER.init();
 
     if topo.cpu_count > 1 {
-        // The SMP bootstrap is intentionally minimal at this stage, but the BSP now owns a
-        // concrete per-CPU state and a local APIC tick source that the scheduler can observe.
+        // The SMP bootstrap is intentionally minimal at this stage; the BSP owns the initial
+        // per-CPU state while the legacy timer drives scheduler ticks.
     }
 }
 

@@ -10,6 +10,11 @@ use crate::{
 pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = 40;
 
+const PIT_COMMAND_PORT: u16 = 0x43;
+const PIT_CHANNEL_0_PORT: u16 = 0x40;
+const PIT_INPUT_HZ: u64 = 1_193_182;
+const PIT_DIVISOR: u16 = 11_932;
+
 static TICKS: AtomicU64 = AtomicU64::new(0);
 
 fn pic_eoi(irq: u8) {
@@ -49,18 +54,19 @@ extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
 }
 
 extern "x86-interrupt" fn apic_timer_handler(_stack_frame: InterruptStackFrame) {
-    handle_timer_tick();
+    apic::LOCAL_APIC_TIMER.tick();
     apic::LOCAL_APIC_TIMER.end_of_interrupt();
 }
 
 fn handle_timer_tick() {
     let ticks = TICKS.fetch_add(1, Ordering::Relaxed) + 1;
-    crate::arch::x86_64::apic::LOCAL_APIC_TIMER.tick();
     crate::cpu::smp::on_tick();
     crate::process::scheduler::on_timer_tick();
 
-    if ticks % 100 == 0 {
-        serial_println!("[TIMER] ~{} seconds uptime", ticks / 18);
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    let secs = ticks * u64::from(PIT_DIVISOR) / PIT_INPUT_HZ;
+    if secs != LAST.swap(secs, Ordering::Relaxed) {
+        serial_println!("[TIMER] {} seconds uptime", secs);
     }
 }
 
@@ -123,6 +129,17 @@ fn init_pic() {
     }
 }
 
+fn init_pit() {
+    unsafe {
+        let mut command: Port<u8> = Port::new(PIT_COMMAND_PORT);
+        let mut channel_0: Port<u8> = Port::new(PIT_CHANNEL_0_PORT);
+
+        command.write(0x34);
+        channel_0.write(PIT_DIVISOR as u8);
+        channel_0.write((PIT_DIVISOR >> 8) as u8);
+    }
+}
+
 pub fn init() {
     unsafe {
         (*(&raw mut IDT))
@@ -141,4 +158,5 @@ pub fn init() {
         (*(&raw mut IDT)).load();
     }
     init_pic();
+    init_pit();
 }
