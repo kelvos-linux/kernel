@@ -11,7 +11,7 @@ grub-mkimage \
 	-d /usr/lib/grub/i386-pc \
 	-p /boot/grub \
 	-o iso/boot/grub/eltorito.img \
-	biosdisk iso9660 multiboot2 normal
+	biosdisk iso9660 multiboot2 normal serial terminal
 xorriso -as mkisofs \
 	-R \
 	-b boot/grub/eltorito.img \

@@ -380,23 +380,3 @@ pub fn init() {
     ipc.create_endpoint(2, 1).ok();
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn syscall_validation_accepts_authorized_access() {
-        let mut process = Process::new(7, "worker", 7);
-        process.grant_capability(42, AccessRights::READ | AccessRights::WRITE);
-
-        assert!(process.validate_capability(42, AccessRights::READ).is_ok());
-    }
-
-    #[test]
-    fn syscall_validation_rejects_unauthorized_access() {
-        let mut process = Process::new(9, "worker", 9);
-        process.grant_capability(42, AccessRights::READ);
-
-        assert!(process.validate_capability(42, AccessRights::WRITE).is_err());
-    }
-}

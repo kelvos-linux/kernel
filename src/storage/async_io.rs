@@ -31,7 +31,14 @@ pub struct AsyncIoQueue {
 }
 
 impl AsyncIoQueue {
-    pub fn submit(&mut self, device_id: u32, operation: IoOperation, sector: u64, length: usize, priority: IoPriority) {
+    pub fn submit(
+        &mut self,
+        device_id: u32,
+        operation: IoOperation,
+        sector: u64,
+        length: usize,
+        priority: IoPriority,
+    ) {
         self.queue.push_back(AsyncRequest {
             request_id: self.next_id,
             device_id,
@@ -48,9 +55,8 @@ impl AsyncIoQueue {
     }
 }
 
-pub static ASYNC_IO: spin::Lazy<spin::Mutex<AsyncIoQueue>> = spin::Lazy::new(|| {
-    spin::Mutex::new(AsyncIoQueue::default())
-});
+pub static ASYNC_IO: spin::Lazy<spin::Mutex<AsyncIoQueue>> =
+    spin::Lazy::new(|| spin::Mutex::new(AsyncIoQueue::default()));
 
 pub fn init() {
     let mut io = ASYNC_IO.lock();
