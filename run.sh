@@ -9,4 +9,5 @@ exec qemu-system-x86_64 \
     -serial stdio \
     -display none \
     -m 256M \
+    -smp 4 \
     -no-reboot -no-shutdown

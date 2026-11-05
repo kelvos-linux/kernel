@@ -26,6 +26,10 @@ rustup toolchain install nightly --component rust-src
 
 The repository's `rust-toolchain.toml` selects nightly automatically. Cargo is configured to build the required core libraries for the `x86_64-unknown-none` target.
 
+## Kernel heap
+
+The kernel registers a locked linked-list allocator over a 16 MiB heap mapped during paging initialization. Startup validates allocation and reuse with `Box`, `Vec`, and `BTreeMap` before initializing subsystems that use `alloc`.
+
 ## Build
 
 From the repository root:

@@ -57,6 +57,8 @@ pub extern "C" fn rust_entry(magic: u32, boot_info_address: u32) -> ! {
     let mut frame_allocator = mm::frame::FrameAllocator::new_default();
     mm::heap::init(&mut paging, &mut frame_allocator);
     serial_println!("[OK] page tables initialized and the kernel heap is mapped in the identity-mapped boot layout");
+    mm::heap::validate_allocator();
+    serial_println!("[OK] kernel heap allocation, collection growth, and deallocation validated");
 
     serial_println!("[..] user memory mapping bootstrap");
     let user_start = x86_64::VirtAddr::new(0x0000_0001_0000_0000);
