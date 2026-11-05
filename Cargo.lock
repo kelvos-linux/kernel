@@ -30,11 +30,16 @@ checksum = "413d67b29ef1021b4d60f4aa1e925ca031751e213832b4b1d588fae623c05c60"
 name = "kelv-os"
 version = "0.1.0"
 dependencies = [
+ "kelvos-shared-ring",
  "linked_list_allocator",
  "spin",
  "uart_16550",
  "x86_64",
 ]
+
+[[package]]
+name = "kelvos-shared-ring"
+version = "0.1.0"
 
 [[package]]
 name = "linked_list_allocator"

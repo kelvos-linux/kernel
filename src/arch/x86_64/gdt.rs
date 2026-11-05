@@ -1,4 +1,5 @@
-use x86_64::instructions::segmentation::{CS, DS, ES, SS, Segment};
+use core::arch::asm;
+use x86_64::instructions::segmentation::{Segment, CS, DS, ES, SS};
 use x86_64::instructions::tables::load_tss;
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
 use x86_64::structures::tss::TaskStateSegment;
@@ -23,6 +24,13 @@ pub struct UserModeFrame {
 
 static mut TSS: TaskStateSegment = TaskStateSegment::new();
 
+const KERNEL_STACK_SIZE: usize = 4096 * 8;
+
+#[repr(align(16))]
+struct KernelStack([u8; KERNEL_STACK_SIZE]);
+
+static mut BOOT_KERNEL_STACK: KernelStack = KernelStack([0; KERNEL_STACK_SIZE]);
+
 // Place GDT directly in a static variable
 static mut GDT: GlobalDescriptorTable = GlobalDescriptorTable::new();
 static mut RING3_SELECTORS: Ring3Selectors = Ring3Selectors {
@@ -34,6 +42,16 @@ pub fn ring3_selectors() -> Ring3Selectors {
     unsafe { RING3_SELECTORS }
 }
 
+pub fn kernel_stack_top() -> usize {
+    unsafe { (*core::ptr::addr_of!(TSS)).privilege_stack_table[0].as_u64() as usize }
+}
+
+pub fn set_kernel_stack_top(stack_top: usize) {
+    unsafe {
+        (*core::ptr::addr_of_mut!(TSS)).privilege_stack_table[0] = VirtAddr::new(stack_top as u64);
+    }
+}
+
 pub fn build_user_mode_frame(entry_point: usize, stack_top: usize) -> UserModeFrame {
     let selectors = ring3_selectors();
     UserModeFrame {
@@ -42,6 +60,25 @@ pub fn build_user_mode_frame(entry_point: usize, stack_top: usize) -> UserModeFr
         rflags: 0x202,
         rsp: stack_top as u64,
         ss: selectors.data.0,
+    }
+}
+
+pub unsafe fn enter_user_mode(frame: UserModeFrame) -> ! {
+    unsafe {
+        asm!(
+            "push {ss}",
+            "push {rsp}",
+            "push {rflags}",
+            "push {cs}",
+            "push {rip}",
+            "iretq",
+            ss = in(reg) u64::from(frame.ss),
+            rsp = in(reg) frame.rsp,
+            rflags = in(reg) frame.rflags,
+            cs = in(reg) u64::from(frame.cs),
+            rip = in(reg) frame.rip,
+            options(noreturn)
+        );
     }
 }
 
@@ -56,9 +93,8 @@ pub fn init() {
             stack_end
         };
 
-        const KERNEL_STACK_SIZE: usize = 4096 * 8;
-        static mut KERNEL_STACK: [u8; KERNEL_STACK_SIZE] = [0; KERNEL_STACK_SIZE];
-        let kernel_stack_top = VirtAddr::from_ptr(&raw const KERNEL_STACK) + KERNEL_STACK_SIZE as u64;
+        let kernel_stack_top =
+            VirtAddr::from_ptr(&raw const BOOT_KERNEL_STACK) + KERNEL_STACK_SIZE as u64;
         (*(&raw mut TSS)).privilege_stack_table[0] = kernel_stack_top;
 
         // 2. Append entries directly to the static GDT.

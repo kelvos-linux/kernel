@@ -1,6 +1,10 @@
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::{
+    arch::global_asm,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+};
 use x86_64::instructions::port::Port;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
+use x86_64::{PrivilegeLevel, VirtAddr};
 
 use crate::{
     arch::x86_64::{apic, gdt},
@@ -16,6 +20,53 @@ const PIT_INPUT_HZ: u64 = 1_193_182;
 const PIT_DIVISOR: u16 = 11_932;
 
 static TICKS: AtomicU64 = AtomicU64::new(0);
+static CHILD_STARTED_REPORTED: AtomicBool = AtomicBool::new(false);
+
+global_asm!(
+    ".global timer_interrupt_entry",
+    ".type timer_interrupt_entry,@function",
+    "timer_interrupt_entry:",
+    "pushq %rax",
+    "pushq %rbx",
+    "pushq %rcx",
+    "pushq %rdx",
+    "pushq %rsi",
+    "pushq %rdi",
+    "pushq %rbp",
+    "pushq %r8",
+    "pushq %r9",
+    "pushq %r10",
+    "pushq %r11",
+    "pushq %r12",
+    "pushq %r13",
+    "pushq %r14",
+    "pushq %r15",
+    "cld",
+    "movq %rsp, %rdi",
+    "call timer_interrupt_switch",
+    "movq %rax, %rsp",
+    "popq %r15",
+    "popq %r14",
+    "popq %r13",
+    "popq %r12",
+    "popq %r11",
+    "popq %r10",
+    "popq %r9",
+    "popq %r8",
+    "popq %rbp",
+    "popq %rdi",
+    "popq %rsi",
+    "popq %rdx",
+    "popq %rcx",
+    "popq %rbx",
+    "popq %rax",
+    "iretq",
+    options(att_syntax)
+);
+
+extern "C" {
+    fn timer_interrupt_entry();
+}
 
 fn pic_eoi(irq: u8) {
     if irq < 8 {
@@ -48,11 +99,6 @@ extern "x86-interrupt" fn double_fault_handler(
     }
 }
 
-extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
-    handle_timer_tick();
-    pic_eoi(0);
-}
-
 extern "x86-interrupt" fn apic_timer_handler(_stack_frame: InterruptStackFrame) {
     apic::LOCAL_APIC_TIMER.tick();
     apic::LOCAL_APIC_TIMER.end_of_interrupt();
@@ -61,13 +107,41 @@ extern "x86-interrupt" fn apic_timer_handler(_stack_frame: InterruptStackFrame) 
 fn handle_timer_tick() {
     let ticks = TICKS.fetch_add(1, Ordering::Relaxed) + 1;
     crate::cpu::smp::on_tick();
-    crate::process::scheduler::on_timer_tick();
 
     static LAST: AtomicU64 = AtomicU64::new(0);
     let secs = ticks * u64::from(PIT_DIVISOR) / PIT_INPUT_HZ;
     if secs != LAST.swap(secs, Ordering::Relaxed) {
         serial_println!("[TIMER] {} seconds uptime", secs);
     }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn timer_interrupt_switch(current_stack_pointer: usize) -> usize {
+    pic_eoi(0);
+    handle_timer_tick();
+
+    let target = crate::process::scheduler::SCHEDULER
+        .lock()
+        .switch_from_interrupt(current_stack_pointer);
+    let Some((stack_pointer, stack_top, first_start)) = target else {
+        return current_stack_pointer;
+    };
+
+    gdt::set_kernel_stack_top(stack_top);
+    if let Some(task_id) = first_start {
+        serial_println!("[SCHED] starting task {}", task_id);
+    }
+
+    let ring = unsafe {
+        &*(kelvos_shared_ring::USER_RING_ADDRESS as *const kelvos_shared_ring::SharedRing)
+    };
+    if ring.child_started.load(Ordering::Acquire) != 0
+        && !CHILD_STARTED_REPORTED.swap(true, Ordering::AcqRel)
+    {
+        serial_println!("[TASK] spawned user task executed");
+    }
+
+    stack_pointer
 }
 
 extern "x86-interrupt" fn keyboard_handler(_stack_frame: InterruptStackFrame) {
@@ -81,24 +155,8 @@ extern "x86-interrupt" fn keyboard_handler(_stack_frame: InterruptStackFrame) {
     let _ = _stack_frame;
 }
 
-extern "x86-interrupt" fn syscall_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    let frame = crate::security::security::SyscallFrame {
-        pid: 1,
-        syscall_no: 2,
-        arg1: 0x1000,
-        arg2: 0x1000,
-        arg3: 0x100,
-        arg4: 0,
-        arg5: 0,
-    };
-
-    let outcome = crate::security::security::SECURITY.handle_syscall(frame);
-    match outcome {
-        Ok(_) => serial_println!("[SYSCALL] ring-3 syscall accepted"),
-        Err(err) => serial_println!("[SYSCALL] denied: {:?}", err),
-    }
-
-    let _ = _stack_frame;
+extern "x86-interrupt" fn sys_ring_notify_handler(_stack_frame: InterruptStackFrame) {
+    crate::process::ring::sys_ring_notify();
 }
 
 static mut IDT: InterruptDescriptorTable = InterruptDescriptorTable::new();
@@ -150,11 +208,13 @@ pub fn init() {
             .set_handler_fn(double_fault_handler)
             .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
         (*(&raw mut IDT)).slice_mut(PIC_1_OFFSET..PIC_1_OFFSET + 1)[0]
-            .set_handler_fn(timer_handler);
+            .set_handler_addr(VirtAddr::from_ptr(timer_interrupt_entry as *const ()));
         (*(&raw mut IDT)).slice_mut(PIC_1_OFFSET + 1..PIC_1_OFFSET + 2)[0]
             .set_handler_fn(keyboard_handler);
         IDT[apic::APIC_TIMER_VECTOR].set_handler_fn(apic_timer_handler);
-        IDT[0x80].set_handler_fn(syscall_interrupt_handler);
+        IDT[0x80]
+            .set_handler_fn(sys_ring_notify_handler)
+            .set_privilege_level(PrivilegeLevel::Ring3);
         (*(&raw mut IDT)).load();
     }
     init_pic();

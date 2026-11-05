@@ -14,7 +14,13 @@ mod serial;
 mod storage;
 
 use core::panic::PanicInfo;
-use x86_64::instructions::{hlt, interrupts};
+use kelvos_shared_ring::{
+    SharedRing, SPAWN_STACK_TOP, USER_IMAGE_ADDRESS, USER_IMAGE_CAPACITY, USER_RING_ADDRESS,
+    USER_STACK_TOP,
+};
+use x86_64::instructions::hlt;
+use x86_64::structures::paging::{Page, PageTableFlags};
+use x86_64::VirtAddr;
 
 const MULTIBOOT2_MAGIC: u32 = 0x36D76289;
 
@@ -64,6 +70,7 @@ pub extern "C" fn rust_entry(magic: u32, boot_info_address: u32) -> ! {
     let reserved_ranges = [
         (kernel_start, kernel_end.saturating_sub(kernel_start)),
         (boot_memory.boot_info_start, boot_memory.boot_info_len),
+        (boot_memory.user_module_start, boot_memory.user_module_len),
     ];
     let mut frame_allocator = mm::frame::FrameAllocator::new(boot_memory.regions, &reserved_ranges)
         .expect("physical frame allocator initialization failed");
@@ -91,29 +98,15 @@ pub extern "C" fn rust_entry(magic: u32, boot_info_address: u32) -> ! {
     mm::heap::validate_allocator();
     serial_println!("[OK] kernel heap allocation, collection growth, and deallocation validated");
 
-    serial_println!("[..] user memory mapping bootstrap");
-    let user_start = x86_64::VirtAddr::new(0x0000_0001_0000_0000);
-    let user_flags = x86_64::structures::paging::PageTableFlags::PRESENT
-        | x86_64::structures::paging::PageTableFlags::WRITABLE
-        | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE;
-    let first_user_frame = frame_allocator
-        .alloc_frame()
-        .expect("user page frame allocation failed");
-    unsafe {
-        paging
-            .map_range_to(
-                user_start,
-                first_user_frame,
-                4096,
-                user_flags,
-                &mut frame_allocator,
-            )
-            .expect("user page mapping failed");
-        paging
-            .map_user_range(user_start + 4096, 4096 * 7, &mut frame_allocator)
-            .expect("user memory mapping failed");
-    }
-    serial_println!("[OK] user memory range mapped and isolated with user-accessible page flags");
+    serial_println!("[..] loading GRUB user_init module and shared ring");
+    let user_image = unsafe {
+        core::slice::from_raw_parts(
+            boot_memory.user_module_start as *const u8,
+            boot_memory.user_module_len as usize,
+        )
+    };
+    load_user_image(&mut paging, &mut frame_allocator, user_image);
+    serial_println!("[OK] user image, shared ring, and two user stacks mapped");
 
     serial_println!("[..] CPU topology detection");
     cpu::topology::init();
@@ -149,12 +142,90 @@ pub extern "C" fn rust_entry(magic: u32, boot_info_address: u32) -> ! {
     }
 
     serial_println!("--------------------------------------");
-    serial_println!("enabling interrupts...");
-    interrupts::enable();
+    let user_mode_frame = process::scheduler::SCHEDULER
+        .lock()
+        .bootstrap_user_task(USER_STACK_TOP as usize, USER_IMAGE_ADDRESS as usize)
+        .expect("initial user task creation failed");
+    serial_println!(
+        "[..] entering ring 3: user_init will submit SPAWN (interrupts enabled by iretq)"
+    );
+    unsafe { arch::x86_64::gdt::enter_user_mode(user_mode_frame) }
+}
 
-    serial_println!("KELV-OS v0.1 initialization complete.");
-    serial_println!("Press keys to test IRQ1, watch the timer via IRQ0.");
-    halt_loop();
+fn load_user_image(
+    paging: &mut mm::paging::PagingManager,
+    frame_allocator: &mut mm::frame::FrameAllocator,
+    image: &[u8],
+) {
+    const PAGE_SIZE: usize = 4096;
+    const STACK_SIZE: usize = PAGE_SIZE * 2;
+
+    if image.is_empty() || image.len() > USER_IMAGE_CAPACITY {
+        panic!("embedded user image exceeds the supported image range");
+    }
+
+    let code_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+    let page_count = image.len().div_ceil(PAGE_SIZE);
+    for page_index in 0..page_count {
+        let frame = frame_allocator
+            .alloc_frame()
+            .expect("user image frame allocation failed");
+        let destination = VirtAddr::new(frame.start_address().as_u64()).as_mut_ptr::<u8>();
+        let source_offset = page_index * PAGE_SIZE;
+        let copy_length = (image.len() - source_offset).min(PAGE_SIZE);
+        unsafe {
+            core::ptr::write_bytes(destination, 0, PAGE_SIZE);
+            core::ptr::copy_nonoverlapping(
+                image.as_ptr().add(source_offset),
+                destination,
+                copy_length,
+            );
+            paging
+                .map_page(
+                    Page::containing_address(VirtAddr::new(
+                        USER_IMAGE_ADDRESS + source_offset as u64,
+                    )),
+                    frame,
+                    code_flags,
+                    frame_allocator,
+                )
+                .expect("user image page mapping failed");
+        }
+    }
+
+    unsafe {
+        paging
+            .map_user_range(VirtAddr::new(USER_RING_ADDRESS), PAGE_SIZE, frame_allocator)
+            .expect("shared ring mapping failed");
+        paging
+            .map_user_range(
+                VirtAddr::new(USER_STACK_TOP - STACK_SIZE as u64),
+                STACK_SIZE,
+                frame_allocator,
+            )
+            .expect("initial user stack mapping failed");
+        paging
+            .map_user_range(
+                VirtAddr::new(SPAWN_STACK_TOP - STACK_SIZE as u64),
+                STACK_SIZE,
+                frame_allocator,
+            )
+            .expect("spawned user stack mapping failed");
+    }
+
+    unsafe {
+        core::ptr::write(USER_RING_ADDRESS as *mut SharedRing, SharedRing::new());
+        core::ptr::write_bytes(
+            (USER_STACK_TOP - STACK_SIZE as u64) as *mut u8,
+            0,
+            STACK_SIZE,
+        );
+        core::ptr::write_bytes(
+            (SPAWN_STACK_TOP - STACK_SIZE as u64) as *mut u8,
+            0,
+            STACK_SIZE,
+        );
+    }
 }
 
 fn halt_loop() -> ! {

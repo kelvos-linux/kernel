@@ -67,7 +67,13 @@ pub struct NvmeController {
 }
 
 impl NvmeController {
-    pub const fn new(id: u32, name: &'static str, sectors: u64, logical_block_size: u32, isolated: bool) -> Self {
+    pub const fn new(
+        id: u32,
+        name: &'static str,
+        sectors: u64,
+        logical_block_size: u32,
+        isolated: bool,
+    ) -> Self {
         Self {
             id,
             name,
@@ -127,9 +133,21 @@ impl StorageRuntime {
         self.domains.push(domain);
     }
 
-    pub fn validate_device_access(&self, device_id: u32, domain_id: u32) -> Result<(), StorageError> {
-        let device = self.devices.iter().find(|d| d.id == device_id).ok_or(StorageError::DeviceNotFound)?;
-        let domain = self.domains.iter().find(|d| d.id == domain_id).ok_or(StorageError::AccessDenied)?;
+    pub fn validate_device_access(
+        &self,
+        device_id: u32,
+        domain_id: u32,
+    ) -> Result<(), StorageError> {
+        let device = self
+            .devices
+            .iter()
+            .find(|d| d.id == device_id)
+            .ok_or(StorageError::DeviceNotFound)?;
+        let domain = self
+            .domains
+            .iter()
+            .find(|d| d.id == domain_id)
+            .ok_or(StorageError::AccessDenied)?;
 
         if device.isolated && !domain.isolated {
             return Err(StorageError::AccessDenied);
@@ -146,10 +164,18 @@ impl StorageRuntime {
         Ok(())
     }
 
-    pub fn dispatch_request(&self, domain_id: u32, request: StorageRequest) -> Result<(), StorageError> {
+    pub fn dispatch_request(
+        &self,
+        domain_id: u32,
+        request: StorageRequest,
+    ) -> Result<(), StorageError> {
         self.validate_device_access(request.device_id, domain_id)?;
 
-        let device = self.devices.iter().find(|d| d.id == request.device_id).ok_or(StorageError::DeviceNotFound)?;
+        let device = self
+            .devices
+            .iter()
+            .find(|d| d.id == request.device_id)
+            .ok_or(StorageError::DeviceNotFound)?;
         if request.sector >= device.sectors {
             return Err(StorageError::InvalidSector);
         }
@@ -171,14 +197,28 @@ impl StorageRuntime {
     }
 }
 
-pub static STORAGE: spin::Lazy<spin::Mutex<StorageRuntime>> = spin::Lazy::new(|| {
-    spin::Mutex::new(StorageRuntime::new())
-});
+pub static STORAGE: spin::Lazy<spin::Mutex<StorageRuntime>> =
+    spin::Lazy::new(|| spin::Mutex::new(StorageRuntime::new()));
 
 pub fn init() {
     let mut storage = STORAGE.lock();
     storage.register_device(NvmeController::new(0, "nvme0", 1 << 20, 4096, true));
-    storage.register_domain(DriverDomain::new(0, "kernel-core", DriverDomainKind::Kernel, true));
-    storage.register_domain(DriverDomain::new(1, "storage-stack", DriverDomainKind::Storage, true));
-    storage.register_domain(DriverDomain::new(2, "user-domain", DriverDomainKind::User, false));
+    storage.register_domain(DriverDomain::new(
+        0,
+        "kernel-core",
+        DriverDomainKind::Kernel,
+        true,
+    ));
+    storage.register_domain(DriverDomain::new(
+        1,
+        "storage-stack",
+        DriverDomainKind::Storage,
+        true,
+    ));
+    storage.register_domain(DriverDomain::new(
+        2,
+        "user-domain",
+        DriverDomainKind::User,
+        false,
+    ));
 }

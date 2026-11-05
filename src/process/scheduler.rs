@@ -2,6 +2,13 @@ use alloc::collections::{BTreeMap, VecDeque};
 
 use crate::process::task::{Task, TaskState};
 
+const TASK_KERNEL_STACK_SIZE: usize = 32 * 1024;
+
+#[repr(align(16))]
+struct TaskKernelStack([u8; TASK_KERNEL_STACK_SIZE]);
+
+static mut CHILD_KERNEL_STACK: TaskKernelStack = TaskKernelStack([0; TASK_KERNEL_STACK_SIZE]);
+
 #[derive(Default)]
 pub struct Scheduler {
     ready_queue: VecDeque<Task>,
@@ -27,7 +34,12 @@ impl Scheduler {
         task
     }
 
-    pub fn create_task_with_entry(&mut self, stack_top: usize, entry_point: usize, ring: u8) -> Task {
+    pub fn create_task_with_entry(
+        &mut self,
+        stack_top: usize,
+        entry_point: usize,
+        ring: u8,
+    ) -> Task {
         let id = self.next_id;
         self.next_id += 1;
         let task = Task::with_entry(id, stack_top, entry_point, ring);
@@ -35,8 +47,16 @@ impl Scheduler {
         task
     }
 
-    pub fn create_user_task(&mut self, stack_top: usize, entry_point: usize) -> Task {
-        self.create_task_with_entry(stack_top, entry_point, 3)
+    pub fn create_user_task(&mut self, stack_top: usize, entry_point: usize) -> Option<Task> {
+        let id = self.next_id;
+        self.next_id = self.next_id.checked_add(1)?;
+        let mut task = Task::with_entry(id, stack_top, entry_point, 3);
+        task.prepare_for_user_mode(entry_point, stack_top);
+        let kernel_stack_top =
+            core::ptr::addr_of_mut!(CHILD_KERNEL_STACK) as usize + TASK_KERNEL_STACK_SIZE;
+        task.initialize_kernel_stack(kernel_stack_top);
+        self.enqueue(task);
+        Some(task)
     }
 
     pub fn schedule(&mut self) -> Option<Task> {
@@ -61,7 +81,10 @@ impl Scheduler {
         Some(current)
     }
 
-    pub fn prepare_user_switch(&mut self, next: Task) -> Option<(Task, crate::arch::x86_64::gdt::UserModeFrame)> {
+    pub fn prepare_user_switch(
+        &mut self,
+        next: Task,
+    ) -> Option<(Task, crate::arch::x86_64::gdt::UserModeFrame)> {
         let current = self.current.take()?;
         let mut next_task = next;
         next_task.prepare_for_user_mode(next_task.entry_point, next_task.stack_top);
@@ -76,9 +99,13 @@ impl Scheduler {
         stack_top: usize,
         entry_point: usize,
     ) -> Option<crate::arch::x86_64::gdt::UserModeFrame> {
-        let mut task = self.create_user_task(stack_top, entry_point);
+        let id = self.next_id;
+        self.next_id = self.next_id.checked_add(1)?;
+        let mut task = Task::with_entry(id, stack_top, entry_point, 3);
         task.prepare_for_user_mode(entry_point, stack_top);
         let frame = task.user_frame();
+        task.kernel_stack_top = crate::arch::x86_64::gdt::kernel_stack_top();
+        task.started = true;
         task.state = TaskState::Runnable;
         self.current = Some(task);
         Some(frame)
@@ -99,30 +126,46 @@ impl Scheduler {
     }
 
     pub fn tick(&mut self) -> Option<Task> {
-        let mut current = self.current.take()?;
-        current.state = TaskState::Sleeping;
-
-        if let Some(next) = self.ready_queue.pop_front() {
-            let mut next_task = next;
-            next_task.state = TaskState::Runnable;
-            self.current = Some(next_task);
-            self.ready_queue.push_back(current);
-            return self.current;
-        }
-
+        let current = self.current.take()?;
         self.ready_queue.push_back(current);
-        self.current = self.ready_queue.pop_front();
+        let mut next = self.ready_queue.pop_front()?;
+        next.state = TaskState::Runnable;
+        self.current = Some(next);
         self.current
+    }
+
+    pub fn switch_from_interrupt(
+        &mut self,
+        current_kernel_stack_pointer: usize,
+    ) -> Option<(usize, usize, Option<u32>)> {
+        let mut current = self.current.take()?;
+        current.kernel_stack_pointer = current_kernel_stack_pointer;
+        current.state = TaskState::Runnable;
+        self.ready_queue.push_back(current);
+
+        let mut next = self.ready_queue.pop_front()?;
+        next.state = TaskState::Runnable;
+        let first_start = if next.started {
+            None
+        } else {
+            next.started = true;
+            Some(next.id)
+        };
+        let target = (
+            next.kernel_stack_pointer,
+            next.kernel_stack_top,
+            first_start,
+        );
+        self.current = Some(next);
+        Some(target)
     }
 }
 
-pub static SCHEDULER: spin::Lazy<spin::Mutex<Scheduler>> = spin::Lazy::new(|| spin::Mutex::new(Scheduler::new()));
+pub static SCHEDULER: spin::Lazy<spin::Mutex<Scheduler>> =
+    spin::Lazy::new(|| spin::Mutex::new(Scheduler::new()));
 
 pub fn init() {
-    let mut scheduler = SCHEDULER.lock();
-    scheduler.create_task_with_entry(0x1000, 0x1000, 0);
-    let _user_frame = scheduler.bootstrap_user_task(0x2000, 0x0000_0000_1000_0000);
-    scheduler.current = scheduler.ready_queue.pop_front();
+    *SCHEDULER.lock() = Scheduler::new();
 }
 
 pub fn on_timer_tick() {

@@ -6,12 +6,15 @@ use crate::{
 };
 
 const MULTIBOOT2_TAG_MEMORY_MAP: u32 = 6;
+const MULTIBOOT2_TAG_MODULE: u32 = 3;
 const MAX_MEMORY_REGIONS: usize = 64;
 
 pub struct BootMemoryMap {
     pub regions: &'static [MemoryRegion],
     pub boot_info_start: u64,
     pub boot_info_len: u64,
+    pub user_module_start: u64,
+    pub user_module_len: u64,
 }
 
 #[repr(C)]
@@ -79,6 +82,7 @@ pub fn init(boot_info_address: u32) -> Result<BootMemoryMap, &'static str> {
     let mut raw_count = 0usize;
     let mut offset = 8usize;
     let mut found_map = false;
+    let mut user_module = None;
 
     while offset.checked_add(8).is_some_and(|end| end <= total_size) {
         let tag = unsafe { core::ptr::read_unaligned(base.add(offset).cast::<TagHeader>()) };
@@ -134,7 +138,30 @@ pub fn init(boot_info_address: u32) -> Result<BootMemoryMap, &'static str> {
             raw_count = entry_count;
             found_map = true;
             serial_println!("[MEM] total usable RAM: {} MiB", usable_mib);
-            break;
+        } else if tag.tag_type == MULTIBOOT2_TAG_MODULE {
+            if tag_size < 17 {
+                return Err("invalid Multiboot2 module tag");
+            }
+            let module_start =
+                unsafe { core::ptr::read_unaligned(base.add(offset + 8).cast::<u32>()) };
+            let module_end =
+                unsafe { core::ptr::read_unaligned(base.add(offset + 12).cast::<u32>()) };
+            let command =
+                unsafe { core::slice::from_raw_parts(base.add(offset + 16), tag_size - 16) };
+            let command_len = command
+                .iter()
+                .position(|byte| *byte == 0)
+                .ok_or("unterminated Multiboot2 module command line")?;
+
+            if &command[..command_len] == b"user_init" {
+                if user_module.is_some() {
+                    return Err("multiple user_init Multiboot2 modules");
+                }
+                if module_start >= module_end || u64::from(module_end) > (1u64 << 32) {
+                    return Err("invalid user_init Multiboot2 module range");
+                }
+                user_module = Some((module_start, module_end));
+            }
         }
 
         let next_offset = tag_size
@@ -151,10 +178,13 @@ pub fn init(boot_info_address: u32) -> Result<BootMemoryMap, &'static str> {
     if !found_map {
         return Err("Multiboot2 memory map tag not found");
     }
+    let (module_start, module_end) = user_module.ok_or("user_init Multiboot2 module not found")?;
 
     Ok(BootMemoryMap {
         regions: bootinfo::normalize(&raw[..raw_count]),
         boot_info_start: boot_info_address as u64,
         boot_info_len: total_size as u64,
+        user_module_start: u64::from(module_start),
+        user_module_len: u64::from(module_end - module_start),
     })
 }

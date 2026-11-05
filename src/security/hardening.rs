@@ -25,11 +25,17 @@ impl SecurityAudit {
     }
 
     pub fn record(&mut self, id: &'static str, severity: AuditSeverity, message: &'static str) {
-        self.entries.push(AuditEntry { id, severity, message });
+        self.entries.push(AuditEntry {
+            id,
+            severity,
+            message,
+        });
     }
 
     pub fn check_kernel_integrity(&self) -> bool {
-        self.entries.iter().all(|entry| entry.severity != AuditSeverity::Critical)
+        self.entries
+            .iter()
+            .all(|entry| entry.severity != AuditSeverity::Critical)
     }
 }
 
@@ -93,7 +99,9 @@ impl FormalVerifier {
     }
 
     pub fn all_verified(&self) -> bool {
-        self.components.iter().all(|component| component.verified == VerifierResult::Pass)
+        self.components
+            .iter()
+            .all(|component| component.verified == VerifierResult::Pass)
     }
 }
 
@@ -194,20 +202,35 @@ impl HardeningRuntime {
     }
 
     pub fn run_audit(&mut self) {
-        self.audit.record("boot-integrity", AuditSeverity::Info, "Kernel boot path validated");
-        self.audit.record("memory-safety", AuditSeverity::Warning, "Bounds checks enabled for managed regions");
-        self.audit.record("ipc-isolation", AuditSeverity::Info, "IPC endpoint enforcement configured");
+        self.audit.record(
+            "boot-integrity",
+            AuditSeverity::Info,
+            "Kernel boot path validated",
+        );
+        self.audit.record(
+            "memory-safety",
+            AuditSeverity::Warning,
+            "Bounds checks enabled for managed regions",
+        );
+        self.audit.record(
+            "ipc-isolation",
+            AuditSeverity::Info,
+            "IPC endpoint enforcement configured",
+        );
     }
 
     pub fn run_fuzz_checks(&mut self) {
         self.fault_injector.queue(FaultKind::NullPointer, 0);
-        self.fault_injector.queue(FaultKind::Overflow, 0xFFFF_FFFF_FFFF_FFFF);
+        self.fault_injector
+            .queue(FaultKind::Overflow, 0xFFFF_FFFF_FFFF_FFFF);
     }
 
     pub fn validate_components(&mut self) {
-        self.verifier.register("memory-allocator", VerifierResult::Pass);
+        self.verifier
+            .register("memory-allocator", VerifierResult::Pass);
         self.verifier.register("scheduler", VerifierResult::Pass);
-        self.verifier.register("ipc-isolation", VerifierResult::Pass);
+        self.verifier
+            .register("ipc-isolation", VerifierResult::Pass);
     }
 
     pub fn run_compatibility_checks(&mut self) {
@@ -235,21 +258,42 @@ impl HardeningRuntime {
         };
         self.release_baseline = baseline;
 
-        self.audit.record("boot-baseline", AuditSeverity::Info, "Kernel boot baseline validated");
-        self.audit.record("memory-baseline", AuditSeverity::Info, "Memory subsystem baseline validated");
-        self.audit.record("scheduler-baseline", AuditSeverity::Info, "Scheduler baseline validated");
-        self.audit.record("security-baseline", AuditSeverity::Info, "Security baseline validated");
-        self.audit.record("storage-baseline", AuditSeverity::Info, "Storage baseline validated");
+        self.audit.record(
+            "boot-baseline",
+            AuditSeverity::Info,
+            "Kernel boot baseline validated",
+        );
+        self.audit.record(
+            "memory-baseline",
+            AuditSeverity::Info,
+            "Memory subsystem baseline validated",
+        );
+        self.audit.record(
+            "scheduler-baseline",
+            AuditSeverity::Info,
+            "Scheduler baseline validated",
+        );
+        self.audit.record(
+            "security-baseline",
+            AuditSeverity::Info,
+            "Security baseline validated",
+        );
+        self.audit.record(
+            "storage-baseline",
+            AuditSeverity::Info,
+            "Storage baseline validated",
+        );
     }
 
     pub fn release_ready(&self) -> bool {
-        self.release_baseline.ready() && self.verifier.all_verified() && self.hw_compat.status() == CompatibilityStatus::Supported
+        self.release_baseline.ready()
+            && self.verifier.all_verified()
+            && self.hw_compat.status() == CompatibilityStatus::Supported
     }
 }
 
-pub static HARDENING: spin::Lazy<spin::Mutex<HardeningRuntime>> = spin::Lazy::new(|| {
-    spin::Mutex::new(HardeningRuntime::new())
-});
+pub static HARDENING: spin::Lazy<spin::Mutex<HardeningRuntime>> =
+    spin::Lazy::new(|| spin::Mutex::new(HardeningRuntime::new()));
 
 pub fn init() -> bool {
     let mut runtime = HARDENING.lock();

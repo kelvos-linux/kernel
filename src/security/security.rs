@@ -83,14 +83,22 @@ impl MemoryProtectionManager {
         Ok(())
     }
 
-    pub fn validate_range(&self, ptr: usize, len: usize, required: AccessRights) -> Result<(), SecurityError> {
+    pub fn validate_range(
+        &self,
+        ptr: usize,
+        len: usize,
+        required: AccessRights,
+    ) -> Result<(), SecurityError> {
         if len == 0 {
             return Ok(());
         }
 
         let end = ptr.checked_add(len).ok_or(SecurityError::InvalidRange)?;
         for region in &self.regions {
-            let region_end = region.base.checked_add(region.len).ok_or(SecurityError::InvalidRange)?;
+            let region_end = region
+                .base
+                .checked_add(region.len)
+                .ok_or(SecurityError::InvalidRange)?;
             if ptr >= region.base && end <= region_end {
                 if region.rights.allows(required) {
                     return Ok(());
@@ -127,7 +135,11 @@ impl Process {
         self.capabilities.grant(object_id, rights);
     }
 
-    pub fn validate_capability(&self, object_id: u32, rights: AccessRights) -> Result<(), SecurityError> {
+    pub fn validate_capability(
+        &self,
+        object_id: u32,
+        rights: AccessRights,
+    ) -> Result<(), SecurityError> {
         self.capabilities.validate(object_id, rights)
     }
 }
@@ -153,8 +165,16 @@ pub struct SecureIpc {
 }
 
 impl SecureIpc {
-    pub fn create_endpoint(&mut self, endpoint_id: u32, owner_pid: u32) -> Result<(), SecurityError> {
-        if self.endpoints.iter().any(|ep| ep.endpoint_id == endpoint_id) {
+    pub fn create_endpoint(
+        &mut self,
+        endpoint_id: u32,
+        owner_pid: u32,
+    ) -> Result<(), SecurityError> {
+        if self
+            .endpoints
+            .iter()
+            .any(|ep| ep.endpoint_id == endpoint_id)
+        {
             return Err(SecurityError::InvalidTarget);
         }
 
@@ -168,30 +188,52 @@ impl SecureIpc {
     }
 
     pub fn connect(&mut self, endpoint_id: u32, peer_pid: u32) -> Result<(), SecurityError> {
-        let endpoint = self.endpoints.iter_mut().find(|ep| ep.endpoint_id == endpoint_id)
+        let endpoint = self
+            .endpoints
+            .iter_mut()
+            .find(|ep| ep.endpoint_id == endpoint_id)
             .ok_or(SecurityError::InvalidTarget)?;
         endpoint.peer_pid = Some(peer_pid);
         Ok(())
     }
 
-    pub fn send(&mut self, endpoint_id: u32, from_pid: u32, to_pid: u32, payload: [u8; 64]) -> Result<(), SecurityError> {
-        let endpoint = self.endpoints.iter_mut().find(|ep| ep.endpoint_id == endpoint_id)
+    pub fn send(
+        &mut self,
+        endpoint_id: u32,
+        from_pid: u32,
+        to_pid: u32,
+        payload: [u8; 64],
+    ) -> Result<(), SecurityError> {
+        let endpoint = self
+            .endpoints
+            .iter_mut()
+            .find(|ep| ep.endpoint_id == endpoint_id)
             .ok_or(SecurityError::InvalidTarget)?;
         if endpoint.owner_pid != from_pid && endpoint.peer_pid != Some(from_pid) {
             return Err(SecurityError::CapabilityDenied);
         }
 
-        endpoint.queue.push_back(IpcMessage { from_pid, to_pid, payload });
+        endpoint.queue.push_back(IpcMessage {
+            from_pid,
+            to_pid,
+            payload,
+        });
         Ok(())
     }
 
     pub fn recv(&mut self, endpoint_id: u32, pid: u32) -> Result<IpcMessage, SecurityError> {
-        let endpoint = self.endpoints.iter_mut().find(|ep| ep.endpoint_id == endpoint_id)
+        let endpoint = self
+            .endpoints
+            .iter_mut()
+            .find(|ep| ep.endpoint_id == endpoint_id)
             .ok_or(SecurityError::InvalidTarget)?;
         if endpoint.peer_pid != Some(pid) && endpoint.owner_pid != pid {
             return Err(SecurityError::CapabilityDenied);
         }
-        endpoint.queue.pop_front().ok_or(SecurityError::InvalidTarget)
+        endpoint
+            .queue
+            .pop_front()
+            .ok_or(SecurityError::InvalidTarget)
     }
 }
 
@@ -252,7 +294,9 @@ impl SyscallFrame {
                 SyscallKind::MapMemory => AccessRights::READ | AccessRights::WRITE,
                 SyscallKind::CreateEndpoint => AccessRights::KERNEL,
                 SyscallKind::ConnectEndpoint => AccessRights::READ,
-                SyscallKind::SendIpc | SyscallKind::ReceiveIpc => AccessRights::READ | AccessRights::WRITE,
+                SyscallKind::SendIpc | SyscallKind::ReceiveIpc => {
+                    AccessRights::READ | AccessRights::WRITE
+                }
             },
         })
     }
@@ -275,17 +319,36 @@ impl SecurityRuntime {
         self.processes.lock().push(process);
     }
 
-    pub fn validate_syscall(&self, process_id: u32, object_id: u32, rights: AccessRights) -> Result<(), SecurityError> {
+    pub fn validate_syscall(
+        &self,
+        process_id: u32,
+        object_id: u32,
+        rights: AccessRights,
+    ) -> Result<(), SecurityError> {
         let processes = self.processes.lock();
-        let process = processes.iter().find(|p| p.pid == process_id).ok_or(SecurityError::InvalidSyscall)?;
+        let process = processes
+            .iter()
+            .find(|p| p.pid == process_id)
+            .ok_or(SecurityError::InvalidSyscall)?;
         process.validate_capability(object_id, rights)
     }
 
-    pub fn validate_memory(&self, ptr: usize, len: usize, required: AccessRights) -> Result<(), SecurityError> {
-        self.memory_protection.lock().validate_range(ptr, len, required)
+    pub fn validate_memory(
+        &self,
+        ptr: usize,
+        len: usize,
+        required: AccessRights,
+    ) -> Result<(), SecurityError> {
+        self.memory_protection
+            .lock()
+            .validate_range(ptr, len, required)
     }
 
-    pub fn create_ipc_endpoint(&self, endpoint_id: u32, owner_pid: u32) -> Result<(), SecurityError> {
+    pub fn create_ipc_endpoint(
+        &self,
+        endpoint_id: u32,
+        owner_pid: u32,
+    ) -> Result<(), SecurityError> {
         self.ipc.lock().create_endpoint(endpoint_id, owner_pid)
     }
 
@@ -308,7 +371,9 @@ impl SecurityRuntime {
                 self.validate_memory(request.ptr, request.len, request.rights)?;
             }
             SyscallKind::CreateEndpoint => {
-                if request.rights == AccessRights::KERNEL || request.rights.allows(AccessRights::KERNEL) {
+                if request.rights == AccessRights::KERNEL
+                    || request.rights.allows(AccessRights::KERNEL)
+                {
                     drop(processes);
                     return self.create_ipc_endpoint(request.object_id, request.pid);
                 }
@@ -325,7 +390,13 @@ impl SecurityRuntime {
         Ok(())
     }
 
-    pub fn syscall_read(&self, pid: u32, object_id: u32, ptr: usize, len: usize) -> Result<(), SecurityError> {
+    pub fn syscall_read(
+        &self,
+        pid: u32,
+        object_id: u32,
+        ptr: usize,
+        len: usize,
+    ) -> Result<(), SecurityError> {
         self.dispatch_syscall(SyscallRequest {
             pid,
             kind: SyscallKind::Read,
@@ -336,7 +407,13 @@ impl SecurityRuntime {
         })
     }
 
-    pub fn syscall_write(&self, pid: u32, object_id: u32, ptr: usize, len: usize) -> Result<(), SecurityError> {
+    pub fn syscall_write(
+        &self,
+        pid: u32,
+        object_id: u32,
+        ptr: usize,
+        len: usize,
+    ) -> Result<(), SecurityError> {
         self.dispatch_syscall(SyscallRequest {
             pid,
             kind: SyscallKind::Write,
@@ -358,16 +435,24 @@ pub static SECURITY: spin::Lazy<SecurityRuntime> = spin::Lazy::new(SecurityRunti
 
 pub fn init() {
     let mut memory = SECURITY.memory_protection.lock();
-    memory.register_region(MemoryRegion {
-        base: 0x1000,
-        len: 0x4000,
-        rights: AccessRights::READ | AccessRights::WRITE,
-    }).ok();
+    memory
+        .register_region(MemoryRegion {
+            base: 0x1000,
+            len: 0x4000,
+            rights: AccessRights::READ | AccessRights::WRITE,
+        })
+        .ok();
 
     let mut processes = SECURITY.processes.lock();
     let mut kernel = Process::new(0, "kernel", 0);
-    kernel.grant_capability(0x1000, AccessRights::READ | AccessRights::WRITE | AccessRights::KERNEL);
-    kernel.grant_capability(1, AccessRights::READ | AccessRights::WRITE | AccessRights::KERNEL);
+    kernel.grant_capability(
+        0x1000,
+        AccessRights::READ | AccessRights::WRITE | AccessRights::KERNEL,
+    );
+    kernel.grant_capability(
+        1,
+        AccessRights::READ | AccessRights::WRITE | AccessRights::KERNEL,
+    );
     processes.push(kernel);
 
     let mut user = Process::new(1, "user", 1);

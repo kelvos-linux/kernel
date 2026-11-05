@@ -41,7 +41,10 @@ impl SimpleFilesystem {
             size: data.len(),
             data: data.to_vec(),
         });
-        self.root.push(DirectoryEntry { inode: inode_id, name });
+        self.root.push(DirectoryEntry {
+            inode: inode_id,
+            name,
+        });
         inode_id
     }
 
@@ -54,16 +57,26 @@ impl SimpleFilesystem {
             size: 0,
             data: Vec::new(),
         });
-        self.root.push(DirectoryEntry { inode: inode_id, name });
+        self.root.push(DirectoryEntry {
+            inode: inode_id,
+            name,
+        });
         inode_id
     }
 
     pub fn read_file(&self, inode_id: u32) -> Option<&[u8]> {
-        self.inodes.iter().find(|inode| inode.id == inode_id).map(|inode| inode.data.as_slice())
+        self.inodes
+            .iter()
+            .find(|inode| inode.id == inode_id)
+            .map(|inode| inode.data.as_slice())
     }
 
     pub fn write_file(&mut self, inode_id: u32, data: &[u8]) -> Result<(), &'static str> {
-        let inode = self.inodes.iter_mut().find(|inode| inode.id == inode_id).ok_or("inode not found")?;
+        let inode = self
+            .inodes
+            .iter_mut()
+            .find(|inode| inode.id == inode_id)
+            .ok_or("inode not found")?;
         inode.data = data.to_vec();
         inode.size = data.len();
         Ok(())

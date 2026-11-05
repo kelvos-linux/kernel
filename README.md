@@ -34,34 +34,29 @@ The kernel registers a locked linked-list allocator over a 16 MiB heap mapped du
 
 Startup builds a 4 KiB frame bitmap from the Multiboot2 memory map, allocates only fully usable pages below the boot identity-map limit, and reserves the kernel image, boot information, and low 1 MiB. `PagingManager` can map allocated frames with custom flags or map consecutive caller-owned physical frames into a virtual range.
 
-## Build
+## User module and shared ring
 
-From the repository root:
+GRUB supplies `user_init` as a Multiboot2 module. The kernel reserves the
+module's physical pages, maps the image at ring 3, and maps one page containing
+an eight-entry, single-producer/single-consumer submission/completion ring.
+Userspace publishes a `SPAWN` entry and invokes `int 0x80`; the interrupt
+handler drains the ring synchronously. There is no polling thread.
 
-```sh
-make build
-```
+The kernel accepts the first SPAWN request by adding a child task to its
+scheduler queue. Timer interrupts save all general-purpose registers and the
+user return frame, switch kernel stacks, and restore the next task's context.
+The initial task and one child can therefore execute in round-robin time
+slices. They still share one address space, and the prototype uses fixed user
+stacks and a static child kernel stack; it does not provide process isolation
+or general task creation.
 
-This creates `kernel.elf`.
+## Kernel build
 
-## Run in QEMU
-
-```sh
-make qemu
-```
-
-This builds the kernel, creates a BIOS-bootable GRUB ISO, and starts QEMU with 256 MiB of memory. Kernel serial output is connected to the terminal. `make run` is an equivalent command.
-
-To create the bootable ISO without starting QEMU:
-
-```sh
-make iso
-```
-
-The generated `kernel.elf`, `kelv-os.iso`, `iso/`, and Cargo `target/` directory are local build artifacts and are excluded from Git.
-
-## Clean
+From the workspace root:
 
 ```sh
-make clean
+make kernel
 ```
+
+This creates `kernel/kernel.elf`. The workspace-level Makefile builds the
+independent user image, packages both images into a GRUB ISO, and runs QEMU.
