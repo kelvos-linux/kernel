@@ -43,9 +43,3 @@ pub fn validate_allocator() {
     }
     core::hint::black_box(&reused);
 }
-
-pub fn init_default() {
-    let mut frames = FrameAllocator::new_default();
-    let mut paging = unsafe { crate::mm::paging::PagingManager::new() };
-    init(&mut paging, &mut frames);
-}

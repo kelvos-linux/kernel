@@ -18,6 +18,11 @@ use x86_64::instructions::{hlt, interrupts};
 
 const MULTIBOOT2_MAGIC: u32 = 0x36D76289;
 
+unsafe extern "C" {
+    static __kernel_start: u8;
+    static __kernel_end: u8;
+}
+
 #[alloc_error_handler]
 fn oom(layout: core::alloc::Layout) -> ! {
     panic!("heap OOM: {layout:?}")
@@ -50,11 +55,37 @@ pub extern "C" fn rust_entry(magic: u32, boot_info_address: u32) -> ! {
     serial_println!("[OK] IDT loaded, PIC remapped to 32/40");
 
     serial_println!("[..] physical memory map detection");
-    memory::init(boot_info_address);
+    let boot_memory = memory::init(boot_info_address).expect("physical memory map parsing failed");
 
     serial_println!("[..] paging initialization");
     let mut paging = unsafe { mm::paging::PagingManager::new() };
-    let mut frame_allocator = mm::frame::FrameAllocator::new_default();
+    let kernel_start = core::ptr::addr_of!(__kernel_start) as u64;
+    let kernel_end = core::ptr::addr_of!(__kernel_end) as u64;
+    let reserved_ranges = [
+        (kernel_start, kernel_end.saturating_sub(kernel_start)),
+        (boot_memory.boot_info_start, boot_memory.boot_info_len),
+    ];
+    let mut frame_allocator = mm::frame::FrameAllocator::new(boot_memory.regions, &reserved_ranges)
+        .expect("physical frame allocator initialization failed");
+    serial_println!(
+        "[OK] physical frame allocator manages {} frames ({} free)",
+        frame_allocator.total_frames(),
+        frame_allocator.free_frames()
+    );
+    let free_frames_before_probe = frame_allocator.free_frames();
+    let probe_frame = frame_allocator
+        .alloc_frame()
+        .expect("physical frame allocator validation failed");
+    if probe_frame.start_address().as_u64() < 0x10_0000 {
+        panic!("physical frame allocator returned reserved low memory");
+    }
+    frame_allocator.free_frame(probe_frame);
+    frame_allocator.free_frame(probe_frame);
+    if frame_allocator.free_frames() != free_frames_before_probe {
+        panic!("physical frame allocator reclamation validation failed");
+    }
+    serial_println!("[OK] physical frame allocation and reclamation validated");
+
     mm::heap::init(&mut paging, &mut frame_allocator);
     serial_println!("[OK] page tables initialized and the kernel heap is mapped in the identity-mapped boot layout");
     mm::heap::validate_allocator();
@@ -62,9 +93,24 @@ pub extern "C" fn rust_entry(magic: u32, boot_info_address: u32) -> ! {
 
     serial_println!("[..] user memory mapping bootstrap");
     let user_start = x86_64::VirtAddr::new(0x0000_0001_0000_0000);
+    let user_flags = x86_64::structures::paging::PageTableFlags::PRESENT
+        | x86_64::structures::paging::PageTableFlags::WRITABLE
+        | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE;
+    let first_user_frame = frame_allocator
+        .alloc_frame()
+        .expect("user page frame allocation failed");
     unsafe {
         paging
-            .map_user_range(user_start, 4096 * 8, &mut frame_allocator)
+            .map_range_to(
+                user_start,
+                first_user_frame,
+                4096,
+                user_flags,
+                &mut frame_allocator,
+            )
+            .expect("user page mapping failed");
+        paging
+            .map_user_range(user_start + 4096, 4096 * 7, &mut frame_allocator)
             .expect("user memory mapping failed");
     }
     serial_println!("[OK] user memory range mapped and isolated with user-accessible page flags");

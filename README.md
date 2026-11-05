@@ -30,6 +30,10 @@ The repository's `rust-toolchain.toml` selects nightly automatically. Cargo is c
 
 The kernel registers a locked linked-list allocator over a 16 MiB heap mapped during paging initialization. Startup validates allocation and reuse with `Box`, `Vec`, and `BTreeMap` before initializing subsystems that use `alloc`.
 
+## Physical memory and paging
+
+Startup builds a 4 KiB frame bitmap from the Multiboot2 memory map, allocates only fully usable pages below the boot identity-map limit, and reserves the kernel image, boot information, and low 1 MiB. `PagingManager` can map allocated frames with custom flags or map consecutive caller-owned physical frames into a virtual range.
+
 ## Build
 
 From the repository root:

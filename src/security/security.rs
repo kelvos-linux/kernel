@@ -379,4 +379,3 @@ pub fn init() {
     ipc.create_endpoint(1, 0).ok();
     ipc.create_endpoint(2, 1).ok();
 }
-
