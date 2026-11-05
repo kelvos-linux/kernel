@@ -61,11 +61,89 @@ global_asm!(
     "popq %rbx",
     "popq %rax",
     "iretq",
+    ".global apic_timer_interrupt_entry",
+    ".type apic_timer_interrupt_entry,@function",
+    "apic_timer_interrupt_entry:",
+    "pushq %rax",
+    "pushq %rbx",
+    "pushq %rcx",
+    "pushq %rdx",
+    "pushq %rsi",
+    "pushq %rdi",
+    "pushq %rbp",
+    "pushq %r8",
+    "pushq %r9",
+    "pushq %r10",
+    "pushq %r11",
+    "pushq %r12",
+    "pushq %r13",
+    "pushq %r14",
+    "pushq %r15",
+    "cld",
+    "movq %rsp, %rdi",
+    "call apic_timer_interrupt_switch",
+    "movq %rax, %rsp",
+    "popq %r15",
+    "popq %r14",
+    "popq %r13",
+    "popq %r12",
+    "popq %r11",
+    "popq %r10",
+    "popq %r9",
+    "popq %r8",
+    "popq %rbp",
+    "popq %rdi",
+    "popq %rsi",
+    "popq %rdx",
+    "popq %rcx",
+    "popq %rbx",
+    "popq %rax",
+    "iretq",
+    ".global reschedule_interrupt_entry",
+    ".type reschedule_interrupt_entry,@function",
+    "reschedule_interrupt_entry:",
+    "pushq %rax",
+    "pushq %rbx",
+    "pushq %rcx",
+    "pushq %rdx",
+    "pushq %rsi",
+    "pushq %rdi",
+    "pushq %rbp",
+    "pushq %r8",
+    "pushq %r9",
+    "pushq %r10",
+    "pushq %r11",
+    "pushq %r12",
+    "pushq %r13",
+    "pushq %r14",
+    "pushq %r15",
+    "cld",
+    "movq %rsp, %rdi",
+    "call reschedule_interrupt_switch",
+    "movq %rax, %rsp",
+    "popq %r15",
+    "popq %r14",
+    "popq %r13",
+    "popq %r12",
+    "popq %r11",
+    "popq %r10",
+    "popq %r9",
+    "popq %r8",
+    "popq %rbp",
+    "popq %rdi",
+    "popq %rsi",
+    "popq %rdx",
+    "popq %rcx",
+    "popq %rbx",
+    "popq %rax",
+    "iretq",
     options(att_syntax)
 );
 
 extern "C" {
     fn timer_interrupt_entry();
+    fn apic_timer_interrupt_entry();
+    fn reschedule_interrupt_entry();
 }
 
 fn pic_eoi(irq: u8) {
@@ -99,39 +177,92 @@ extern "x86-interrupt" fn double_fault_handler(
     }
 }
 
-extern "x86-interrupt" fn apic_timer_handler(_stack_frame: InterruptStackFrame) {
-    apic::LOCAL_APIC_TIMER.tick();
-    apic::LOCAL_APIC_TIMER.end_of_interrupt();
+extern "x86-interrupt" fn apic_error_handler(_stack_frame: InterruptStackFrame) {
+    apic::end_of_interrupt();
+}
+
+extern "x86-interrupt" fn apic_spurious_handler(_stack_frame: InterruptStackFrame) {}
+
+extern "x86-interrupt" fn tlb_shootdown_ipi_handler(_stack_frame: InterruptStackFrame) {
+    unsafe {
+        let cr3: u64;
+        core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
+        core::arch::asm!("mov cr3, {}", in(reg) cr3, options(nomem, nostack, preserves_flags));
+    }
+    apic::end_of_interrupt();
+}
+
+extern "x86-interrupt" fn halt_ipi_handler(_stack_frame: InterruptStackFrame) {
+    apic::end_of_interrupt();
+    if let Some(pc) = crate::arch::x86_64::percpu::try_this_cpu() {
+        let cpu_id = pc.cpu_id.load(Ordering::Relaxed) as usize;
+        if let Some(slot) = crate::cpu::state::CPU_STATES.get(cpu_id) {
+            let _ = slot.transition(
+                crate::cpu::state::CpuState::Online,
+                crate::cpu::state::CpuState::Halted,
+            );
+        }
+    }
+    loop {
+        x86_64::instructions::interrupts::disable();
+        x86_64::instructions::hlt();
+    }
 }
 
 fn handle_timer_tick() {
     let ticks = TICKS.fetch_add(1, Ordering::Relaxed) + 1;
     crate::cpu::smp::on_tick();
+    let _secs = ticks * u64::from(PIT_DIVISOR) / PIT_INPUT_HZ;
+}
 
-    static LAST: AtomicU64 = AtomicU64::new(0);
-    let secs = ticks * u64::from(PIT_DIVISOR) / PIT_INPUT_HZ;
-    if secs != LAST.swap(secs, Ordering::Relaxed) {
-        serial_println!("[TIMER] {} seconds uptime", secs);
+fn switch_to_runnable_task(current_stack_pointer: usize) -> usize {
+    let cpu_id = crate::arch::x86_64::percpu::this_cpu().id() as usize;
+    let target = crate::process::scheduler::SCHEDULER
+        .lock()
+        .switch_from_interrupt(cpu_id, current_stack_pointer);
+    let Some((stack_pointer, stack_top, first_start)) = target else {
+        return current_stack_pointer;
+    };
+
+    gdt::set_kernel_stack_top_for_cpu(cpu_id, stack_top);
+    if let Some(task_id) = first_start {
+        serial_println!("[SCHED] CPU {} starting task {}", cpu_id, task_id);
     }
+    stack_pointer
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn timer_interrupt_switch(current_stack_pointer: usize) -> usize {
     pic_eoi(0);
     handle_timer_tick();
+    let stack_pointer = switch_to_runnable_task(current_stack_pointer);
+    report_child_started();
+    stack_pointer
+}
 
-    let target = crate::process::scheduler::SCHEDULER
-        .lock()
-        .switch_from_interrupt(current_stack_pointer);
-    let Some((stack_pointer, stack_top, first_start)) = target else {
-        return current_stack_pointer;
-    };
+#[unsafe(no_mangle)]
+extern "C" fn apic_timer_interrupt_switch(current_stack_pointer: usize) -> usize {
+    apic::LOCAL_APIC_TIMER.tick();
+    crate::cpu::smp::on_tick();
+    apic::end_of_interrupt();
+    let stack_pointer = switch_to_runnable_task(current_stack_pointer);
+    report_child_started();
+    stack_pointer
+}
 
-    gdt::set_kernel_stack_top(stack_top);
-    if let Some(task_id) = first_start {
-        serial_println!("[SCHED] starting task {}", task_id);
+#[unsafe(no_mangle)]
+extern "C" fn reschedule_interrupt_switch(current_stack_pointer: usize) -> usize {
+    crate::cpu::smp::on_reschedule_ipi();
+    apic::end_of_interrupt();
+    if let Some(pc) = crate::arch::x86_64::percpu::try_this_cpu() {
+        pc.reschedule_pending.store(false, Ordering::Release);
     }
+    let stack_pointer = switch_to_runnable_task(current_stack_pointer);
+    report_child_started();
+    stack_pointer
+}
 
+fn report_child_started() {
     let ring = unsafe {
         &*(kelvos_shared_ring::USER_RING_ADDRESS as *const kelvos_shared_ring::SharedRing)
     };
@@ -140,8 +271,6 @@ extern "C" fn timer_interrupt_switch(current_stack_pointer: usize) -> usize {
     {
         serial_println!("[TASK] spawned user task executed");
     }
-
-    stack_pointer
 }
 
 extern "x86-interrupt" fn keyboard_handler(_stack_frame: InterruptStackFrame) {
@@ -211,12 +340,26 @@ pub fn init() {
             .set_handler_addr(VirtAddr::from_ptr(timer_interrupt_entry as *const ()));
         (*(&raw mut IDT)).slice_mut(PIC_1_OFFSET + 1..PIC_1_OFFSET + 2)[0]
             .set_handler_fn(keyboard_handler);
-        IDT[apic::APIC_TIMER_VECTOR].set_handler_fn(apic_timer_handler);
+        IDT[apic::APIC_TIMER_VECTOR]
+            .set_handler_addr(VirtAddr::from_ptr(apic_timer_interrupt_entry as *const ()));
+        IDT[apic::IPI_RESCHEDULE]
+            .set_handler_addr(VirtAddr::from_ptr(reschedule_interrupt_entry as *const ()));
+        IDT[apic::IPI_TLB_SHOOTDOWN].set_handler_fn(tlb_shootdown_ipi_handler);
+        IDT[apic::IPI_HALT].set_handler_fn(halt_ipi_handler);
+        IDT[apic::APIC_ERROR_VECTOR].set_handler_fn(apic_error_handler);
+        IDT[apic::APIC_SPURIOUS_VECTOR].set_handler_fn(apic_spurious_handler);
         IDT[0x80]
             .set_handler_fn(sys_ring_notify_handler)
             .set_privilege_level(PrivilegeLevel::Ring3);
         (*(&raw mut IDT)).load();
     }
+
     init_pic();
     init_pit();
+}
+
+pub fn init_ap() {
+    unsafe {
+        (*(&raw mut IDT)).load();
+    }
 }

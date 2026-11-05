@@ -1,3 +1,5 @@
+use crate::cpu::affinity::CpuMask;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TaskState {
     Runnable,
@@ -28,14 +30,15 @@ pub struct Task {
     pub entry_point: usize,
     pub ring: u8,
     pub started: bool,
+    pub affinity: CpuMask,
 }
 
 impl Task {
-    pub const fn new(id: u32, stack_top: usize) -> Self {
+    pub fn new(id: u32, stack_top: usize) -> Self {
         Self::with_entry(id, stack_top, 0, 0)
     }
 
-    pub const fn with_entry(id: u32, stack_top: usize, entry_point: usize, ring: u8) -> Self {
+    pub fn with_entry(id: u32, stack_top: usize, entry_point: usize, ring: u8) -> Self {
         Self {
             id,
             state: TaskState::Runnable,
@@ -54,6 +57,11 @@ impl Task {
             entry_point,
             ring,
             started: false,
+            affinity: CpuMask::all(
+                crate::cpu::topology::TOPOLOGY
+                    .get()
+                    .map_or(1, |topology| topology.cpu_count),
+            ),
         }
     }
 

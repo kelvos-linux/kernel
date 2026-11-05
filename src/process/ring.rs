@@ -1,9 +1,7 @@
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::Ordering;
 use kelvos_shared_ring::{Completion, SharedRing, OP_SPAWN, RING_CAPACITY};
 
 use crate::{process::scheduler::SCHEDULER, serial_println};
-
-static SPAWNED_CHILDREN: AtomicU32 = AtomicU32::new(0);
 
 pub fn sys_ring_notify() {
     let ring = unsafe { &*(kelvos_shared_ring::USER_RING_ADDRESS as *const SharedRing) };
@@ -30,11 +28,6 @@ pub fn sys_ring_notify() {
             || submission.stack_top != kelvos_shared_ring::SPAWN_STACK_TOP
         {
             -22
-        } else if SPAWNED_CHILDREN
-            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            -11
         } else {
             let child = SCHEDULER.lock().create_user_task(
                 submission.stack_top as usize,
@@ -42,6 +35,7 @@ pub fn sys_ring_notify() {
             );
             if let Some(child) = child {
                 serial_println!("[RING] SPAWN queued task {}", child.id);
+                crate::cpu::smp::reschedule_other_cpus();
                 i64::from(child.id)
             } else {
                 -11

@@ -8,6 +8,13 @@ header_start:
     .long header_end - header_start
     .long -(0xe85250d6 + (header_end - header_start))
 
+    # Request the ACPI 2.0 RSDP tag so Rust can enumerate processors from MADT.
+    .short 1
+    .short 0
+    .long 12
+    .long 15
+    .balign 8
+
     # Required end tag
     .short 0
     .short 0

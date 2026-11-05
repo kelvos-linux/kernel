@@ -1,3 +1,4 @@
+use crate::cpu::topology::MAX_CPUS;
 use core::arch::asm;
 use x86_64::instructions::segmentation::{Segment, CS, DS, ES, SS};
 use x86_64::instructions::tables::load_tss;
@@ -33,6 +34,25 @@ static mut BOOT_KERNEL_STACK: KernelStack = KernelStack([0; KERNEL_STACK_SIZE]);
 
 // Place GDT directly in a static variable
 static mut GDT: GlobalDescriptorTable = GlobalDescriptorTable::new();
+const AP_DOUBLE_FAULT_STACK_SIZE: usize = 4096 * 5;
+
+struct ApCpuTables {
+    gdt: GlobalDescriptorTable,
+    tss: TaskStateSegment,
+    double_fault_stack: [u8; AP_DOUBLE_FAULT_STACK_SIZE],
+}
+
+impl ApCpuTables {
+    const fn new() -> Self {
+        Self {
+            gdt: GlobalDescriptorTable::new(),
+            tss: TaskStateSegment::new(),
+            double_fault_stack: [0; AP_DOUBLE_FAULT_STACK_SIZE],
+        }
+    }
+}
+
+static mut AP_CPU_TABLES: [ApCpuTables; MAX_CPUS] = [const { ApCpuTables::new() }; MAX_CPUS];
 static mut RING3_SELECTORS: Ring3Selectors = Ring3Selectors {
     code: SegmentSelector::new(0, PrivilegeLevel::Ring0),
     data: SegmentSelector::new(0, PrivilegeLevel::Ring0),
@@ -49,6 +69,22 @@ pub fn kernel_stack_top() -> usize {
 pub fn set_kernel_stack_top(stack_top: usize) {
     unsafe {
         (*core::ptr::addr_of_mut!(TSS)).privilege_stack_table[0] = VirtAddr::new(stack_top as u64);
+    }
+}
+
+pub fn set_kernel_stack_top_for_cpu(cpu_id: usize, stack_top: usize) {
+    if cpu_id == 0 {
+        set_kernel_stack_top(stack_top);
+        return;
+    }
+    if cpu_id >= MAX_CPUS {
+        panic!("logical CPU id is out of range");
+    }
+    unsafe {
+        let tables = &mut *core::ptr::addr_of_mut!(AP_CPU_TABLES)
+            .cast::<ApCpuTables>()
+            .add(cpu_id);
+        tables.tss.privilege_stack_table[0] = VirtAddr::new(stack_top as u64);
     }
 }
 
@@ -119,6 +155,35 @@ pub fn init() {
         SS::set_reg(SegmentSelector(0));
 
         // 5. Load TSS
+        load_tss(tss_selector);
+    }
+}
+
+pub fn init_ap(cpu_id: usize, kernel_stack_top: usize) {
+    if cpu_id == 0 || cpu_id >= MAX_CPUS {
+        panic!("invalid AP logical CPU id");
+    }
+
+    unsafe {
+        let tables = &mut *core::ptr::addr_of_mut!(AP_CPU_TABLES)
+            .cast::<ApCpuTables>()
+            .add(cpu_id);
+        tables.tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] =
+            VirtAddr::from_ptr(tables.double_fault_stack.as_ptr())
+                + AP_DOUBLE_FAULT_STACK_SIZE as u64;
+        tables.tss.privilege_stack_table[0] = VirtAddr::new(kernel_stack_top as u64);
+
+        let code_selector = tables.gdt.append(Descriptor::kernel_code_segment());
+        let _data_selector = tables.gdt.append(Descriptor::kernel_data_segment());
+        let _user_code_selector = tables.gdt.append(Descriptor::user_code_segment());
+        let _user_data_selector = tables.gdt.append(Descriptor::user_data_segment());
+        let tss_selector = tables.gdt.append(Descriptor::tss_segment(&tables.tss));
+        tables.gdt.load();
+
+        CS::set_reg(code_selector);
+        DS::set_reg(SegmentSelector(0));
+        ES::set_reg(SegmentSelector(0));
+        SS::set_reg(SegmentSelector(0));
         load_tss(tss_selector);
     }
 }

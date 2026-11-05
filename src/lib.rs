@@ -15,8 +15,8 @@ mod storage;
 
 use core::panic::PanicInfo;
 use kelvos_shared_ring::{
-    SharedRing, SPAWN_STACK_TOP, USER_IMAGE_ADDRESS, USER_IMAGE_CAPACITY, USER_RING_ADDRESS,
-    USER_STACK_TOP,
+    SharedRing, MAX_SPAWNED_TASKS, SPAWN_STACK_TOP, USER_IMAGE_ADDRESS, USER_IMAGE_CAPACITY,
+    USER_RING_ADDRESS, USER_STACK_SIZE, USER_STACK_TOP,
 };
 use x86_64::instructions::hlt;
 use x86_64::structures::paging::{Page, PageTableFlags};
@@ -106,21 +106,39 @@ pub extern "C" fn rust_entry(magic: u32, boot_info_address: u32) -> ! {
         )
     };
     load_user_image(&mut paging, &mut frame_allocator, user_image);
-    serial_println!("[OK] user image, shared ring, and two user stacks mapped");
+    serial_println!(
+        "[OK] user image, shared ring, initial user stack, and {} spawned-task stacks mapped",
+        MAX_SPAWNED_TASKS
+    );
 
     serial_println!("[..] CPU topology detection");
-    cpu::topology::init();
+    cpu::topology::init(boot_info_address);
     let topo = cpu::topology::TOPOLOGY.get().unwrap();
     serial_println!(
-        "[OK] detected {} logical CPU(s); BSP APIC id = {}",
+        "[OK] detected {} logical CPU(s){}; BSP APIC id = {}",
         topo.cpu_count,
+        if topo.from_acpi {
+            " from ACPI MADT"
+        } else {
+            " (BSP fallback)"
+        },
         topo.bsp_apic_id
     );
+    if topo.unsupported_cpu_count != 0 {
+        serial_println!(
+            "[WARN] {} processor(s) exceed xAPIC/MAX_CPUS support and will not be started",
+            topo.unsupported_cpu_count
+        );
+    }
+
+    serial_println!("[..] local APIC and BSP CPU initialization");
+    cpu::init::init();
+    serial_println!("[OK] BSP local APIC and per-CPU storage initialized");
 
     serial_println!("[..] scheduler and SMP bootstrap");
     process::scheduler::init();
     cpu::smp::init();
-    serial_println!("[OK] multi-core scheduler bootstrap initialized");
+    serial_println!("[OK] SMP CPU bootstrap initialized");
 
     serial_println!("[..] security and isolation bootstrap");
     security::init();
@@ -158,8 +176,6 @@ fn load_user_image(
     image: &[u8],
 ) {
     const PAGE_SIZE: usize = 4096;
-    const STACK_SIZE: usize = PAGE_SIZE * 2;
-
     if image.is_empty() || image.len() > USER_IMAGE_CAPACITY {
         panic!("embedded user image exceeds the supported image range");
     }
@@ -199,32 +215,38 @@ fn load_user_image(
             .expect("shared ring mapping failed");
         paging
             .map_user_range(
-                VirtAddr::new(USER_STACK_TOP - STACK_SIZE as u64),
-                STACK_SIZE,
+                VirtAddr::new(USER_STACK_TOP - USER_STACK_SIZE as u64),
+                USER_STACK_SIZE,
                 frame_allocator,
             )
             .expect("initial user stack mapping failed");
-        paging
-            .map_user_range(
-                VirtAddr::new(SPAWN_STACK_TOP - STACK_SIZE as u64),
-                STACK_SIZE,
-                frame_allocator,
-            )
-            .expect("spawned user stack mapping failed");
+        for task_index in 0..MAX_SPAWNED_TASKS {
+            let stack_top = SPAWN_STACK_TOP + u64::from(task_index) * USER_STACK_SIZE as u64;
+            paging
+                .map_user_range(
+                    VirtAddr::new(stack_top - USER_STACK_SIZE as u64),
+                    USER_STACK_SIZE,
+                    frame_allocator,
+                )
+                .expect("spawned user stack mapping failed");
+        }
     }
 
     unsafe {
         core::ptr::write(USER_RING_ADDRESS as *mut SharedRing, SharedRing::new());
         core::ptr::write_bytes(
-            (USER_STACK_TOP - STACK_SIZE as u64) as *mut u8,
+            (USER_STACK_TOP - USER_STACK_SIZE as u64) as *mut u8,
             0,
-            STACK_SIZE,
+            USER_STACK_SIZE,
         );
-        core::ptr::write_bytes(
-            (SPAWN_STACK_TOP - STACK_SIZE as u64) as *mut u8,
-            0,
-            STACK_SIZE,
-        );
+        for task_index in 0..MAX_SPAWNED_TASKS {
+            let stack_top = SPAWN_STACK_TOP + u64::from(task_index) * USER_STACK_SIZE as u64;
+            core::ptr::write_bytes(
+                (stack_top - USER_STACK_SIZE as u64) as *mut u8,
+                0,
+                USER_STACK_SIZE,
+            );
+        }
     }
 }
 
