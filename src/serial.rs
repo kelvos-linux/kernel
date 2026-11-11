@@ -18,6 +18,17 @@ pub fn _print(args: core::fmt::Arguments) {
     }
 }
 
+
+pub fn with_serial<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&mut SerialPort) -> R,
+{
+    SERIAL1.get().map(|serial| {
+        let mut guard = serial.lock();
+        f(&mut guard)
+    })
+}
+
 #[macro_export]
 macro_rules! serial_print {
     ($($arg:tt)*) => {

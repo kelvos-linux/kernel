@@ -1,4 +1,5 @@
 use super::topology::MAX_CPUS;
+use core::fmt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CpuMask([u64; MAX_CPUS.div_ceil(u64::BITS as usize)]);
@@ -40,5 +41,17 @@ impl CpuMask {
 impl Default for CpuMask {
     fn default() -> Self {
         Self::empty()
+    }
+}
+
+impl fmt::Binary for CpuMask {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (index, word) in self.0.iter().enumerate().rev() {
+            if index != self.0.len() - 1 {
+                f.write_str(":")?;
+            }
+            fmt::Binary::fmt(word, f)?;
+        }
+        Ok(())
     }
 }

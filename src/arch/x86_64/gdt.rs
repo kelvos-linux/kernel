@@ -21,6 +21,7 @@ pub struct UserModeFrame {
     pub rflags: u64,
     pub rsp: u64,
     pub ss: u16,
+    pub task_id: u32,
 }
 
 static mut TSS: TaskStateSegment = TaskStateSegment::new();
@@ -88,7 +89,7 @@ pub fn set_kernel_stack_top_for_cpu(cpu_id: usize, stack_top: usize) {
     }
 }
 
-pub fn build_user_mode_frame(entry_point: usize, stack_top: usize) -> UserModeFrame {
+pub fn build_user_mode_frame(entry_point: usize, stack_top: usize, task_id: u32) -> UserModeFrame {
     let selectors = ring3_selectors();
     UserModeFrame {
         rip: entry_point as u64,
@@ -96,6 +97,7 @@ pub fn build_user_mode_frame(entry_point: usize, stack_top: usize) -> UserModeFr
         rflags: 0x202,
         rsp: stack_top as u64,
         ss: selectors.data.0,
+        task_id,
     }
 }
 
@@ -108,6 +110,7 @@ pub unsafe fn enter_user_mode(frame: UserModeFrame) -> ! {
             "push {cs}",
             "push {rip}",
             "iretq",
+            in("rdi") u64::from(frame.task_id),
             ss = in(reg) u64::from(frame.ss),
             rsp = in(reg) frame.rsp,
             rflags = in(reg) frame.rflags,

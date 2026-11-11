@@ -1,9 +1,9 @@
 use core::{
     arch::global_asm,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
 use x86_64::instructions::port::Port;
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
+use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 use x86_64::{PrivilegeLevel, VirtAddr};
 
 use crate::{
@@ -20,7 +20,7 @@ const PIT_INPUT_HZ: u64 = 1_193_182;
 const PIT_DIVISOR: u16 = 11_932;
 
 static TICKS: AtomicU64 = AtomicU64::new(0);
-static CHILD_STARTED_REPORTED: AtomicBool = AtomicBool::new(false);
+static CHILD_STARTED_REPORTED: AtomicU32 = AtomicU32::new(0);
 
 global_asm!(
     ".global timer_interrupt_entry",
@@ -177,7 +177,55 @@ extern "x86-interrupt" fn double_fault_handler(
     }
 }
 
+extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFrame) {
+    serial_println!(
+        "[FAULT] #UD invalid opcode at rip={:#x}",
+        stack_frame.instruction_pointer.as_u64()
+    );
+    halt_after_fault()
+}
+
+extern "x86-interrupt" fn general_protection_fault_handler(
+    stack_frame: InterruptStackFrame,
+    error_code: u64,
+) {
+    serial_println!(
+        "[FAULT] #GP error={:#x} rip={:#x}",
+        error_code,
+        stack_frame.instruction_pointer.as_u64()
+    );
+    halt_after_fault()
+}
+
+extern "x86-interrupt" fn page_fault_handler(
+    stack_frame: InterruptStackFrame,
+    error_code: PageFaultErrorCode,
+) {
+    let fault_address: u64;
+    unsafe {
+        core::arch::asm!(
+            "mov {}, cr2",
+            out(reg) fault_address,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+    serial_println!(
+        "[FAULT] #PF address={:#x} error={:?} rip={:#x}",
+        fault_address,
+        error_code,
+        stack_frame.instruction_pointer.as_u64()
+    );
+    halt_after_fault()
+}
+
+fn halt_after_fault() -> ! {
+    loop {
+        x86_64::instructions::hlt();
+    }
+}
+
 extern "x86-interrupt" fn apic_error_handler(_stack_frame: InterruptStackFrame) {
+    apic::clear_error_status();
     apic::end_of_interrupt();
 }
 
@@ -235,9 +283,8 @@ fn switch_to_runnable_task(current_stack_pointer: usize) -> usize {
 extern "C" fn timer_interrupt_switch(current_stack_pointer: usize) -> usize {
     pic_eoi(0);
     handle_timer_tick();
-    let stack_pointer = switch_to_runnable_task(current_stack_pointer);
     report_child_started();
-    stack_pointer
+    switch_to_runnable_task(current_stack_pointer)
 }
 
 #[unsafe(no_mangle)]
@@ -245,9 +292,8 @@ extern "C" fn apic_timer_interrupt_switch(current_stack_pointer: usize) -> usize
     apic::LOCAL_APIC_TIMER.tick();
     crate::cpu::smp::on_tick();
     apic::end_of_interrupt();
-    let stack_pointer = switch_to_runnable_task(current_stack_pointer);
     report_child_started();
-    stack_pointer
+    switch_to_runnable_task(current_stack_pointer)
 }
 
 #[unsafe(no_mangle)]
@@ -257,19 +303,27 @@ extern "C" fn reschedule_interrupt_switch(current_stack_pointer: usize) -> usize
     if let Some(pc) = crate::arch::x86_64::percpu::try_this_cpu() {
         pc.reschedule_pending.store(false, Ordering::Release);
     }
-    let stack_pointer = switch_to_runnable_task(current_stack_pointer);
     report_child_started();
-    stack_pointer
+    switch_to_runnable_task(current_stack_pointer)
 }
 
 fn report_child_started() {
+    let Some(task) = crate::process::scheduler::SCHEDULER.lock().current_task() else {
+        return;
+    };
+    if task.id == 0 {
+        return;
+    }
+    let Some(started_bit) = 1u32.checked_shl(task.id) else {
+        return;
+    };
     let ring = unsafe {
         &*(kelvos_shared_ring::USER_RING_ADDRESS as *const kelvos_shared_ring::SharedRing)
     };
-    if ring.child_started.load(Ordering::Acquire) != 0
-        && !CHILD_STARTED_REPORTED.swap(true, Ordering::AcqRel)
+    if ring.child_started.load(Ordering::Acquire) & started_bit != 0
+        && CHILD_STARTED_REPORTED.fetch_or(started_bit, Ordering::AcqRel) & started_bit == 0
     {
-        serial_println!("[TASK] spawned user task executed");
+        serial_println!("[TASK] spawned user task {} executed", task.id);
     }
 }
 
@@ -336,6 +390,15 @@ pub fn init() {
             .double_fault
             .set_handler_fn(double_fault_handler)
             .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
+        (*(&raw mut IDT))
+            .invalid_opcode
+            .set_handler_fn(invalid_opcode_handler);
+        (*(&raw mut IDT))
+            .general_protection_fault
+            .set_handler_fn(general_protection_fault_handler);
+        (*(&raw mut IDT))
+            .page_fault
+            .set_handler_fn(page_fault_handler);
         (*(&raw mut IDT)).slice_mut(PIC_1_OFFSET..PIC_1_OFFSET + 1)[0]
             .set_handler_addr(VirtAddr::from_ptr(timer_interrupt_entry as *const ()));
         (*(&raw mut IDT)).slice_mut(PIC_1_OFFSET + 1..PIC_1_OFFSET + 2)[0]

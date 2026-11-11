@@ -30,13 +30,13 @@ pub fn install(cpu_id: usize, apic_id: u32, pc: &'static PerCpu) -> Result<(), &
     let start = core::ptr::addr_of!(ap_trampoline_start);
     let end = core::ptr::addr_of!(ap_trampoline_end);
     let length = end as usize - start as usize;
-    if length > 4096 {
-        return Err("AP startup trampoline exceeds one page");
+    if length > 0x0f00 {
+        return Err("AP startup trampoline leaves no room for its real-mode stack");
     }
 
     let boot_data = unsafe { core::ptr::read_volatile(0x40e as *const u16) };
     let ebda = usize::from(boot_data) << 4;
-    if ebda != 0 && TRAMPOLINE_ADDRESS + length >= ebda {
+    if ebda != 0 && TRAMPOLINE_ADDRESS + 4096 >= ebda {
         return Err("AP startup trampoline would overlap the EBDA");
     }
 
