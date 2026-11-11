@@ -12,6 +12,7 @@ const IA32_APIC_BASE_MSR: u32 = 0x1B;
 const APIC_BASE_MASK: u64 = 0x000f_ffff_ffff_f000;
 const APIC_OFFSET_ID: u32 = 0x020;
 const APIC_OFFSET_EOI: u32 = 0x0B0;
+const APIC_OFFSET_ERROR_STATUS: u32 = 0x280;
 const APIC_OFFSET_SPURIOUS: u32 = 0x0F0;
 const APIC_OFFSET_ICR_LOW: u32 = 0x300;
 const APIC_OFFSET_ICR_HIGH: u32 = 0x310;
@@ -119,6 +120,11 @@ pub fn send_startup(apic_id: u32, vector: u8) -> Result<(), &'static str> {
 
 pub fn end_of_interrupt() {
     apic_write(APIC_OFFSET_EOI, 0);
+}
+
+pub fn clear_error_status() {
+    apic_write(APIC_OFFSET_ERROR_STATUS, 0);
+    let _ = apic_read(APIC_OFFSET_ERROR_STATUS);
 }
 
 pub fn configure_timer(vector: u8, initial_count: u32) {

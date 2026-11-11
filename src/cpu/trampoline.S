@@ -21,7 +21,7 @@ ap_trampoline_start:
     movw %ax, %ds
     movw %ax, %es
     movw %ax, %ss
-    movw $0x7ff0, %sp
+    movw $0x8ff0, %sp
     lgdt %cs:AP_GDTR_OFFSET
     movl %cs:AP_DATA_OFFSET, %eax
     movl %eax, %cr3

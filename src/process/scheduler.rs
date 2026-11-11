@@ -2,10 +2,11 @@ use alloc::collections::{BTreeMap, VecDeque};
 
 use crate::{
     cpu::{
+        affinity::CpuMask,
         state::{CpuState, CPU_STATES},
         topology::MAX_CPUS,
     },
-    process::task::{Task, TaskState},
+    process::task::{task_debug_enabled, Task, TaskState},
 };
 
 const TASK_KERNEL_STACK_SIZE: usize = 32 * 1024;
@@ -48,6 +49,9 @@ impl Scheduler {
         let id = self.next_id;
         self.next_id += 1;
         let task = Task::new(id, stack_top);
+        if task_debug_enabled() {
+            task.print_info_banner("created");
+        }
         self.enqueue(task);
         task
     }
@@ -61,6 +65,9 @@ impl Scheduler {
         let id = self.next_id;
         self.next_id += 1;
         let task = Task::with_entry(id, stack_top, entry_point, ring);
+        if ring != 3 && task_debug_enabled() {
+            task.print_info_banner("created");
+        }
         self.enqueue(task);
         task
     }
@@ -80,6 +87,9 @@ impl Scheduler {
         task.prepare_for_user_mode(entry_point, task_stack_top as usize);
         let kernel_stack_top = task_kernel_stack_top(id)?;
         task.initialize_kernel_stack(kernel_stack_top);
+        if task_debug_enabled() {
+            task.print_info_banner("created");
+        }
         self.next_id = next_id;
         self.enqueue(task);
         Some(task)
@@ -129,12 +139,19 @@ impl Scheduler {
     ) -> Option<crate::arch::x86_64::gdt::UserModeFrame> {
         let id = self.next_id;
         self.next_id = self.next_id.checked_add(1)?;
+        let kernel_stack_top = task_kernel_stack_top(id)?;
         let mut task = Task::with_entry(id, stack_top, entry_point, 3);
         task.prepare_for_user_mode(entry_point, stack_top);
+        task.initialize_kernel_stack(kernel_stack_top);
+        task.affinity = CpuMask::empty();
+        task.affinity.set(0, true);
         let frame = task.user_frame();
-        task.kernel_stack_top = crate::arch::x86_64::gdt::kernel_stack_top();
         task.started = true;
         task.state = TaskState::Runnable;
+        crate::arch::x86_64::gdt::set_kernel_stack_top_for_cpu(0, kernel_stack_top);
+        if task_debug_enabled() {
+            task.print_info_banner("created");
+        }
         self.current[0] = Some(task);
         Some(frame)
     }
