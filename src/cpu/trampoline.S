@@ -27,6 +27,7 @@ ap_trampoline_start:
     movl %eax, %cr3
 
     movl %cr4, %eax
+    andl $0xfffaffff, %eax # Disable FSGSBASE and OSXSAVE
     orl $0x620, %eax
     movl %eax, %cr4
 
@@ -50,7 +51,7 @@ ap_trampoline_pm_entry:
     wrmsr
 
     movl %cr0, %eax
-    andl $0xfffffffb, %eax
+    andl $0xfffffff3, %eax
     orl $0x80010002, %eax
     movl %eax, %cr0
     pushl $0x18
@@ -66,14 +67,8 @@ ap_trampoline_lm_entry:
 
     movq AP_DATA_PHYS+16, %rsp
     andq $-16, %rsp
-    movq AP_DATA_PHYS+24, %rax
-    movl $0xc0000101, %ecx
-    movq %rax, %rdx
-    shrq $32, %rdx
-    wrmsr
-
     movl AP_DATA_PHYS+4, %edi
-    movq AP_DATA_PHYS+32, %rax
+    movq AP_DATA_PHYS+24, %rax
     call *%rax
 2:
     cli
@@ -98,7 +93,6 @@ ap_trampoline_data:
     .long 0
     .long 0
     .long 0
-    .quad 0
     .quad 0
     .quad 0
 

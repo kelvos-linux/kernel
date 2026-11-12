@@ -33,6 +33,7 @@ SECTIONS
     .data ALIGN(4K) :
     {
         *(.data .data.*)
+        *(.got .got.*)
     } :data
 
     .bss ALIGN(4K) (NOLOAD) :
@@ -40,7 +41,7 @@ SECTIONS
         *(COMMON)
         *(.bss .bss.*)
     } :data
-    __kernel_end = .;
+    __kernel_end = ALIGN(4K);
 
     /DISCARD/ :
     {

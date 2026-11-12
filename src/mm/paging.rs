@@ -3,7 +3,7 @@ use x86_64::{
     structures::paging::{
         Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB,
     },
-    VirtAddr,
+    PhysAddr, VirtAddr,
 };
 
 use crate::mm::frame::FrameAllocator;
@@ -22,6 +22,85 @@ impl PagingManager {
         let phys_offset = VirtAddr::new(0);
         let mapper = unsafe { init(phys_offset) };
         Self { mapper }
+    }
+
+    /// Create a private root and low PDPT from the kernel-only boot tables.
+    ///
+    /// # Safety
+    /// Call during boot while the source tables are kernel-only and
+    /// stable. Shared supervisor mappings must outlive all derived roots.
+    pub unsafe fn new_user(
+        &self,
+        allocator: &mut FrameAllocator,
+    ) -> Result<(PhysFrame<Size4KiB>, Self), &'static str> {
+        let root_frame = allocator.alloc_frame().ok_or("out of PML4 frames")?;
+        let pdpt_frame = allocator.alloc_frame().ok_or("out of PDPT frames")?;
+        let source_root = self.mapper.level_4_table();
+        let source_pdpt = source_root[0].frame().map_err(|_| "missing boot PDPT")?;
+        let root = root_frame.start_address().as_u64() as *mut PageTable;
+        let pdpt = pdpt_frame.start_address().as_u64() as *mut PageTable;
+        unsafe {
+            root.write(source_root.clone());
+            pdpt.write((*(source_pdpt.start_address().as_u64() as *const PageTable)).clone());
+            (&mut *root)[0].set_frame(
+                pdpt_frame,
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+            );
+            let mapper = OffsetPageTable::new(&mut *root, VirtAddr::zero());
+            Ok((root_frame, Self { mapper }))
+        }
+    }
+
+    /// Restrict the supervisor alias of a user frame after initialization.
+    ///
+    /// # Safety
+    /// Call before AP startup, using the active boot mapper. The boot
+    /// identity map and all derived roots share these supervisor directories.
+    pub unsafe fn protect_user_frame_alias(
+        &mut self,
+        frame: PhysFrame<Size4KiB>,
+        writable: bool,
+        allocator: &mut FrameAllocator,
+    ) -> Result<(), &'static str> {
+        let address = VirtAddr::new(frame.start_address().as_u64());
+        let pdpt = self.mapper.level_4_table()[0]
+            .frame()
+            .map_err(|_| "missing boot PDPT")?;
+        let pdpt = pdpt.start_address().as_u64() as *mut PageTable;
+        let directory = unsafe { (&*pdpt)[address.p3_index()].frame() }
+            .map_err(|_| "missing boot page directory")?;
+        let directory = directory.start_address().as_u64() as *mut PageTable;
+        let entry = unsafe { &mut (&mut *directory)[address.p2_index()] };
+
+        let table_frame = if entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+            let base = entry.addr().as_u64();
+            let flags = entry.flags() - PageTableFlags::HUGE_PAGE;
+            let table_frame = allocator
+                .alloc_frame()
+                .ok_or("out of identity page table frames")?;
+            let table = table_frame.start_address().as_u64() as *mut PageTable;
+            unsafe {
+                table.write(PageTable::new());
+                for (index, leaf) in (&mut *table).iter_mut().enumerate() {
+                    leaf.set_addr(PhysAddr::new(base + index as u64 * 4096), flags);
+                }
+            }
+            entry.set_frame(
+                table_frame,
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+            );
+            table_frame
+        } else {
+            entry.frame().map_err(|_| "missing identity page table")?
+        };
+
+        let table = table_frame.start_address().as_u64() as *mut PageTable;
+        let alias = unsafe { &mut (&mut *table)[address.p1_index()] };
+        let mut flags = alias.flags() | PageTableFlags::NO_EXECUTE;
+        flags.set(PageTableFlags::WRITABLE, writable);
+        alias.set_flags(flags);
+        x86_64::instructions::tlb::flush(address);
+        Ok(())
     }
 
     /// Map one virtual page to a caller-selected physical frame.
@@ -113,17 +192,6 @@ impl PagingManager {
             }
         }
         Ok(())
-    }
-
-    pub unsafe fn map_user_range(
-        &mut self,
-        start: VirtAddr,
-        length: usize,
-        allocator: &mut FrameAllocator,
-    ) -> Result<(), &'static str> {
-        let flags =
-            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
-        unsafe { self.map_range_with_flags(start, length, flags, allocator) }
     }
 
     fn validated_page_count(

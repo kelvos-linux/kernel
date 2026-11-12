@@ -1,4 +1,4 @@
-use crate::arch::x86_64::{apic, percpu};
+use crate::arch::x86_64::apic;
 
 use super::{local, state, topology::TOPOLOGY};
 
@@ -23,9 +23,6 @@ pub fn init() {
         panic!("CPUID and local APIC BSP IDs do not match");
     }
 
-    local::init(topology.bsp_index, apic_id);
+    local::prepare(topology.bsp_index, apic_id);
     state::init_bsp(topology.bsp_index);
-    let pc = percpu::this_cpu();
-    pc.current_task
-        .store(core::ptr::null_mut(), core::sync::atomic::Ordering::Relaxed);
 }

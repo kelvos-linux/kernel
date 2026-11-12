@@ -1,3 +1,4 @@
-pub mod ring;
+pub mod image;
 pub mod scheduler;
-pub mod task;
+pub mod syscall;
+pub mod thread;

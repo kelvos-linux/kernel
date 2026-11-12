@@ -1,6 +1,6 @@
 use core::{
     arch::global_asm,
-    sync::atomic::{AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicU64, Ordering},
 };
 use x86_64::instructions::port::Port;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
@@ -20,130 +20,150 @@ const PIT_INPUT_HZ: u64 = 1_193_182;
 const PIT_DIVISOR: u16 = 11_932;
 
 static TICKS: AtomicU64 = AtomicU64::new(0);
-static CHILD_STARTED_REPORTED: AtomicU32 = AtomicU32::new(0);
-
+// Shared frame layout for timer interrupts, syscall entry, and new tasks.
+// The CPU aligns RSP before pushing five words. Fifteen GPR pushes restore
+// the alignment required before calling an extern "C" Rust function.
 global_asm!(
-    ".global timer_interrupt_entry",
-    ".type timer_interrupt_entry,@function",
-    "timer_interrupt_entry:",
-    "pushq %rax",
-    "pushq %rbx",
-    "pushq %rcx",
-    "pushq %rdx",
-    "pushq %rsi",
-    "pushq %rdi",
-    "pushq %rbp",
-    "pushq %r8",
-    "pushq %r9",
-    "pushq %r10",
-    "pushq %r11",
-    "pushq %r12",
-    "pushq %r13",
-    "pushq %r14",
-    "pushq %r15",
-    "cld",
-    "movq %rsp, %rdi",
-    "call timer_interrupt_switch",
-    "movq %rax, %rsp",
-    "popq %r15",
-    "popq %r14",
-    "popq %r13",
-    "popq %r12",
-    "popq %r11",
-    "popq %r10",
-    "popq %r9",
-    "popq %r8",
-    "popq %rbp",
-    "popq %rdi",
-    "popq %rsi",
-    "popq %rdx",
-    "popq %rcx",
-    "popq %rbx",
-    "popq %rax",
-    "iretq",
-    ".global apic_timer_interrupt_entry",
-    ".type apic_timer_interrupt_entry,@function",
-    "apic_timer_interrupt_entry:",
-    "pushq %rax",
-    "pushq %rbx",
-    "pushq %rcx",
-    "pushq %rdx",
-    "pushq %rsi",
-    "pushq %rdi",
-    "pushq %rbp",
-    "pushq %r8",
-    "pushq %r9",
-    "pushq %r10",
-    "pushq %r11",
-    "pushq %r12",
-    "pushq %r13",
-    "pushq %r14",
-    "pushq %r15",
-    "cld",
-    "movq %rsp, %rdi",
-    "call apic_timer_interrupt_switch",
-    "movq %rax, %rsp",
-    "popq %r15",
-    "popq %r14",
-    "popq %r13",
-    "popq %r12",
-    "popq %r11",
-    "popq %r10",
-    "popq %r9",
-    "popq %r8",
-    "popq %rbp",
-    "popq %rdi",
-    "popq %rsi",
-    "popq %rdx",
-    "popq %rcx",
-    "popq %rbx",
-    "popq %rax",
-    "iretq",
-    ".global reschedule_interrupt_entry",
-    ".type reschedule_interrupt_entry,@function",
-    "reschedule_interrupt_entry:",
-    "pushq %rax",
-    "pushq %rbx",
-    "pushq %rcx",
-    "pushq %rdx",
-    "pushq %rsi",
-    "pushq %rdi",
-    "pushq %rbp",
-    "pushq %r8",
-    "pushq %r9",
-    "pushq %r10",
-    "pushq %r11",
-    "pushq %r12",
-    "pushq %r13",
-    "pushq %r14",
-    "pushq %r15",
-    "cld",
-    "movq %rsp, %rdi",
-    "call reschedule_interrupt_switch",
-    "movq %rax, %rsp",
-    "popq %r15",
-    "popq %r14",
-    "popq %r13",
-    "popq %r12",
-    "popq %r11",
-    "popq %r10",
-    "popq %r9",
-    "popq %r8",
-    "popq %rbp",
-    "popq %rdi",
-    "popq %rsi",
-    "popq %rdx",
-    "popq %rcx",
-    "popq %rbx",
-    "popq %rax",
-    "iretq",
-    options(att_syntax)
+    r#"
+    .macro entry name, handler
+    .global \name
+    .type \name,@function
+
+\name:
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push rbp
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+    cld
+    mov rdi, rsp
+    call \handler
+    mov rsp, rax
+    jmp restore_interrupt_frame
+    .endm
+
+    entry timer_interrupt_entry, timer_interrupt_switch
+    entry apic_timer_interrupt_entry, apic_timer_interrupt_switch
+    entry reschedule_interrupt_entry, reschedule_interrupt_switch
+    entry syscall_interrupt_entry, dispatch_syscall
+
+    .global resume_interrupt_frame
+    .type resume_interrupt_frame,@function
+resume_interrupt_frame:
+    mov rsp, rdi
+restore_interrupt_frame:
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    iretq
+    "#
 );
+
+#[repr(C)]
+pub(crate) struct RegisterFrame {
+    r15_through_rbp: [u64; 9],
+    pub rdi: u64,
+    pub rsi: u64,
+    rdx_through_rbx: [u64; 3],
+    pub rax: u64,
+}
+
+#[repr(C)]
+pub(crate) struct UserInterruptFrame {
+    pub registers: RegisterFrame,
+    rip: u64,
+    cs: u64,
+    rflags: u64,
+    rsp: u64,
+    ss: u64,
+}
+
+impl UserInterruptFrame {
+    pub fn new(entry: usize, stack: u64, argument: u64) -> Self {
+        let selectors = gdt::ring3_selectors();
+        Self {
+            registers: RegisterFrame {
+                r15_through_rbp: [0; 9],
+                rdi: argument,
+                rsi: 0,
+                rdx_through_rbx: [0; 3],
+                rax: 0,
+            },
+            rip: entry as u64,
+            cs: u64::from(selectors.code.0),
+            rflags: 0x202,
+            rsp: stack,
+            ss: u64::from(selectors.data.0),
+        }
+    }
+
+    pub fn validate_return(&self) {
+        validate_return(self.cs, self.ss, self.rip, self.rsp);
+    }
+}
+
+fn validate_interrupt_return(frame: &InterruptStackFrame) {
+    validate_return(
+        u64::from(frame.code_segment.0),
+        u64::from(frame.stack_segment.0),
+        frame.instruction_pointer.as_u64(),
+        frame.stack_pointer.as_u64(),
+    );
+}
+
+fn validate_return(cs: u64, ss: u64, rip: u64, rsp: u64) {
+    if cs & 3 == 0 {
+        return;
+    }
+
+    // IRET can fault in ring 0 if the user left a noncanonical RSP.
+    let selectors = gdt::ring3_selectors();
+    const USER_LIMIT: u64 = 1 << 47;
+    if cs != u64::from(selectors.code.0)
+        || ss != u64::from(selectors.data.0)
+        || rip >= USER_LIMIT
+        || rsp >= USER_LIMIT
+    {
+        serial_println!(
+            "[FAULT] invalid ring-3 return frame rip={:#x} rsp={:#x}",
+            rip,
+            rsp
+        );
+        crate::process::scheduler::terminate_current(kelvos_shared_ring::ExitStatus::Faulted(
+            kelvos_shared_ring::INVALID_USER_RETURN,
+        ));
+    }
+}
+
+const _: () = assert!(size_of::<UserInterruptFrame>() == 20 * 8);
 
 extern "C" {
     fn timer_interrupt_entry();
     fn apic_timer_interrupt_entry();
     fn reschedule_interrupt_entry();
+    fn syscall_interrupt_entry();
 }
 
 fn pic_eoi(irq: u8) {
@@ -160,8 +180,9 @@ fn pic_eoi(irq: u8) {
     }
 }
 
-extern "x86-interrupt" fn breakpoint_handler(_stack_frame: InterruptStackFrame) {
+extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
     serial_println!("[EXC] #BP breakpoint exception");
+    validate_interrupt_return(&stack_frame);
 }
 
 extern "x86-interrupt" fn double_fault_handler(
@@ -182,7 +203,7 @@ extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFram
         "[FAULT] #UD invalid opcode at rip={:#x}",
         stack_frame.instruction_pointer.as_u64()
     );
-    halt_after_fault()
+    handle_fault(&stack_frame, 6)
 }
 
 extern "x86-interrupt" fn general_protection_fault_handler(
@@ -194,7 +215,7 @@ extern "x86-interrupt" fn general_protection_fault_handler(
         error_code,
         stack_frame.instruction_pointer.as_u64()
     );
-    halt_after_fault()
+    handle_fault(&stack_frame, 13)
 }
 
 extern "x86-interrupt" fn page_fault_handler(
@@ -215,29 +236,75 @@ extern "x86-interrupt" fn page_fault_handler(
         error_code,
         stack_frame.instruction_pointer.as_u64()
     );
-    halt_after_fault()
+    handle_fault(&stack_frame, 14)
 }
 
-fn halt_after_fault() -> ! {
+fn handle_fault(frame: &InterruptStackFrame, vector: u16) -> ! {
+    if frame.code_segment.rpl() == PrivilegeLevel::Ring3 {
+        crate::process::scheduler::terminate_current(kelvos_shared_ring::ExitStatus::Faulted(
+            vector,
+        ));
+    }
+    x86_64::instructions::interrupts::disable();
     loop {
         x86_64::instructions::hlt();
     }
 }
 
-extern "x86-interrupt" fn apic_error_handler(_stack_frame: InterruptStackFrame) {
-    apic::clear_error_status();
-    apic::end_of_interrupt();
+macro_rules! fault_handler {
+    ($handler:ident, $vector:literal, $number:literal) => {
+        extern "x86-interrupt" fn $handler(frame: InterruptStackFrame) {
+            serial_println!(
+                "[FAULT] {} rip={:#x}",
+                $vector,
+                frame.instruction_pointer.as_u64()
+            );
+            handle_fault(&frame, $number);
+        }
+    };
+    ($handler:ident, $vector:literal, $number:literal, error_code) => {
+        extern "x86-interrupt" fn $handler(frame: InterruptStackFrame, error: u64) {
+            serial_println!(
+                "[FAULT] {} error={:#x} rip={:#x}",
+                $vector,
+                error,
+                frame.instruction_pointer.as_u64()
+            );
+            handle_fault(&frame, $number);
+        }
+    };
 }
 
-extern "x86-interrupt" fn apic_spurious_handler(_stack_frame: InterruptStackFrame) {}
+fault_handler!(divide_error_handler, "#DE", 0);
+fault_handler!(debug_handler, "#DB", 1);
+fault_handler!(overflow_handler, "#OF", 4);
+fault_handler!(bounds_handler, "#BR", 5);
+fault_handler!(device_not_available_handler, "#NM", 7);
+fault_handler!(invalid_tss_handler, "#TS", 10, error_code);
+fault_handler!(segment_not_present_handler, "#NP", 11, error_code);
+fault_handler!(stack_segment_handler, "#SS", 12, error_code);
+fault_handler!(x87_handler, "#MF", 16);
+fault_handler!(alignment_handler, "#AC", 17, error_code);
+fault_handler!(simd_handler, "#XM", 19);
 
-extern "x86-interrupt" fn tlb_shootdown_ipi_handler(_stack_frame: InterruptStackFrame) {
+extern "x86-interrupt" fn apic_error_handler(stack_frame: InterruptStackFrame) {
+    apic::clear_error_status();
+    apic::end_of_interrupt();
+    validate_interrupt_return(&stack_frame);
+}
+
+extern "x86-interrupt" fn apic_spurious_handler(stack_frame: InterruptStackFrame) {
+    validate_interrupt_return(&stack_frame);
+}
+
+extern "x86-interrupt" fn tlb_shootdown_ipi_handler(stack_frame: InterruptStackFrame) {
     unsafe {
         let cr3: u64;
         core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
         core::arch::asm!("mov cr3, {}", in(reg) cr3, options(nomem, nostack, preserves_flags));
     }
     apic::end_of_interrupt();
+    validate_interrupt_return(&stack_frame);
 }
 
 extern "x86-interrupt" fn halt_ipi_handler(_stack_frame: InterruptStackFrame) {
@@ -263,28 +330,11 @@ fn handle_timer_tick() {
     let _secs = ticks * u64::from(PIT_DIVISOR) / PIT_INPUT_HZ;
 }
 
-fn switch_to_runnable_task(current_stack_pointer: usize) -> usize {
-    let cpu_id = crate::arch::x86_64::percpu::this_cpu().id() as usize;
-    let target = crate::process::scheduler::SCHEDULER
-        .lock()
-        .switch_from_interrupt(cpu_id, current_stack_pointer);
-    let Some((stack_pointer, stack_top, first_start)) = target else {
-        return current_stack_pointer;
-    };
-
-    gdt::set_kernel_stack_top_for_cpu(cpu_id, stack_top);
-    if let Some(task_id) = first_start {
-        serial_println!("[SCHED] CPU {} starting task {}", cpu_id, task_id);
-    }
-    stack_pointer
-}
-
 #[unsafe(no_mangle)]
 extern "C" fn timer_interrupt_switch(current_stack_pointer: usize) -> usize {
     pic_eoi(0);
     handle_timer_tick();
-    report_child_started();
-    switch_to_runnable_task(current_stack_pointer)
+    schedule_interrupt(current_stack_pointer)
 }
 
 #[unsafe(no_mangle)]
@@ -292,8 +342,7 @@ extern "C" fn apic_timer_interrupt_switch(current_stack_pointer: usize) -> usize
     apic::LOCAL_APIC_TIMER.tick();
     crate::cpu::smp::on_tick();
     apic::end_of_interrupt();
-    report_child_started();
-    switch_to_runnable_task(current_stack_pointer)
+    schedule_interrupt(current_stack_pointer)
 }
 
 #[unsafe(no_mangle)]
@@ -303,31 +352,19 @@ extern "C" fn reschedule_interrupt_switch(current_stack_pointer: usize) -> usize
     if let Some(pc) = crate::arch::x86_64::percpu::try_this_cpu() {
         pc.reschedule_pending.store(false, Ordering::Release);
     }
-    report_child_started();
-    switch_to_runnable_task(current_stack_pointer)
+    schedule_interrupt(current_stack_pointer)
 }
 
-fn report_child_started() {
-    let Some(task) = crate::process::scheduler::SCHEDULER.lock().current_task() else {
-        return;
-    };
-    if task.id == 0 {
-        return;
-    }
-    let Some(started_bit) = 1u32.checked_shl(task.id) else {
-        return;
-    };
-    let ring = unsafe {
-        &*(kelvos_shared_ring::USER_RING_ADDRESS as *const kelvos_shared_ring::SharedRing)
-    };
-    if ring.child_started.load(Ordering::Acquire) & started_bit != 0
-        && CHILD_STARTED_REPORTED.fetch_or(started_bit, Ordering::AcqRel) & started_bit == 0
-    {
-        serial_println!("[TASK] spawned user task {} executed", task.id);
-    }
+fn schedule_interrupt(stack: usize) -> usize {
+    // The assembly stubs build the same frame on a trusted kernel stack.
+    unsafe { &*(stack as *const UserInterruptFrame) }.validate_return();
+    crate::process::scheduler::switch_from_interrupt(
+        stack,
+        crate::process::scheduler::Switch::Preempt,
+    )
 }
 
-extern "x86-interrupt" fn keyboard_handler(_stack_frame: InterruptStackFrame) {
+extern "x86-interrupt" fn keyboard_handler(stack_frame: InterruptStackFrame) {
     let scancode = unsafe { Port::<u8>::new(0x60).read() };
     if scancode == 0x00 || scancode == 0xE0 {
         serial_println!("[KBD] ignored non-actionable scancode {:#04x}", scancode);
@@ -335,11 +372,7 @@ extern "x86-interrupt" fn keyboard_handler(_stack_frame: InterruptStackFrame) {
         serial_println!("[KBD] scancode {:#04x}", scancode);
     }
     pic_eoi(1);
-    let _ = _stack_frame;
-}
-
-extern "x86-interrupt" fn sys_ring_notify_handler(_stack_frame: InterruptStackFrame) {
-    crate::process::ring::sys_ring_notify();
+    validate_interrupt_return(&stack_frame);
 }
 
 static mut IDT: InterruptDescriptorTable = InterruptDescriptorTable::new();
@@ -383,6 +416,21 @@ fn init_pit() {
 
 pub fn init() {
     unsafe {
+        let idt = &mut *(&raw mut IDT);
+        idt.divide_error.set_handler_fn(divide_error_handler);
+        idt.debug.set_handler_fn(debug_handler);
+        idt.overflow.set_handler_fn(overflow_handler);
+        idt.bound_range_exceeded.set_handler_fn(bounds_handler);
+        idt.device_not_available
+            .set_handler_fn(device_not_available_handler);
+        idt.invalid_tss.set_handler_fn(invalid_tss_handler);
+        idt.segment_not_present
+            .set_handler_fn(segment_not_present_handler);
+        idt.stack_segment_fault
+            .set_handler_fn(stack_segment_handler);
+        idt.x87_floating_point.set_handler_fn(x87_handler);
+        idt.alignment_check.set_handler_fn(alignment_handler);
+        idt.simd_floating_point.set_handler_fn(simd_handler);
         (*(&raw mut IDT))
             .breakpoint
             .set_handler_fn(breakpoint_handler);
@@ -412,7 +460,7 @@ pub fn init() {
         IDT[apic::APIC_ERROR_VECTOR].set_handler_fn(apic_error_handler);
         IDT[apic::APIC_SPURIOUS_VECTOR].set_handler_fn(apic_spurious_handler);
         IDT[0x80]
-            .set_handler_fn(sys_ring_notify_handler)
+            .set_handler_addr(VirtAddr::from_ptr(syscall_interrupt_entry as *const ()))
             .set_privilege_level(PrivilegeLevel::Ring3);
         (*(&raw mut IDT)).load();
     }

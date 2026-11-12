@@ -1,7 +1,7 @@
 use crate::cpu::topology::MAX_CPUS;
-use core::arch::asm;
-use x86_64::instructions::segmentation::{Segment, CS, DS, ES, SS};
+use x86_64::instructions::segmentation::{Segment, CS, DS, ES, FS, GS, SS};
 use x86_64::instructions::tables::load_tss;
+use x86_64::registers::model_specific::{FsBase, GsBase};
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
 use x86_64::structures::tss::TaskStateSegment;
 use x86_64::{PrivilegeLevel, VirtAddr};
@@ -12,16 +12,6 @@ pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 pub struct Ring3Selectors {
     pub code: SegmentSelector,
     pub data: SegmentSelector,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct UserModeFrame {
-    pub rip: u64,
-    pub cs: u16,
-    pub rflags: u64,
-    pub rsp: u64,
-    pub ss: u16,
-    pub task_id: u32,
 }
 
 static mut TSS: TaskStateSegment = TaskStateSegment::new();
@@ -89,38 +79,6 @@ pub fn set_kernel_stack_top_for_cpu(cpu_id: usize, stack_top: usize) {
     }
 }
 
-pub fn build_user_mode_frame(entry_point: usize, stack_top: usize, task_id: u32) -> UserModeFrame {
-    let selectors = ring3_selectors();
-    UserModeFrame {
-        rip: entry_point as u64,
-        cs: selectors.code.0,
-        rflags: 0x202,
-        rsp: stack_top as u64,
-        ss: selectors.data.0,
-        task_id,
-    }
-}
-
-pub unsafe fn enter_user_mode(frame: UserModeFrame) -> ! {
-    unsafe {
-        asm!(
-            "push {ss}",
-            "push {rsp}",
-            "push {rflags}",
-            "push {cs}",
-            "push {rip}",
-            "iretq",
-            in("rdi") u64::from(frame.task_id),
-            ss = in(reg) u64::from(frame.ss),
-            rsp = in(reg) frame.rsp,
-            rflags = in(reg) frame.rflags,
-            cs = in(reg) u64::from(frame.cs),
-            rip = in(reg) frame.rip,
-            options(noreturn)
-        );
-    }
-}
-
 pub fn init() {
     unsafe {
         // 1. Configure TSS with an IST stack for double faults and a ring-0 privilege stack.
@@ -141,7 +99,8 @@ pub fn init() {
         let _data_selector = (*(&raw mut GDT)).append(Descriptor::kernel_data_segment());
         let user_code_selector = (*(&raw mut GDT)).append(Descriptor::user_code_segment());
         let user_data_selector = (*(&raw mut GDT)).append(Descriptor::user_data_segment());
-        let tss_selector = (*(&raw mut GDT)).append(Descriptor::tss_segment(&*(&raw const TSS)));
+        let tss_selector =
+            (*(&raw mut GDT)).append(Descriptor::tss_segment_unchecked(&raw const TSS));
 
         RING3_SELECTORS = Ring3Selectors {
             code: user_code_selector,
@@ -156,6 +115,10 @@ pub fn init() {
         DS::set_reg(SegmentSelector(0));
         ES::set_reg(SegmentSelector(0));
         SS::set_reg(SegmentSelector(0));
+        FS::set_reg(SegmentSelector(0));
+        GS::set_reg(SegmentSelector(0));
+        FsBase::write(VirtAddr::zero());
+        GsBase::write(VirtAddr::zero());
 
         // 5. Load TSS
         load_tss(tss_selector);
@@ -180,13 +143,19 @@ pub fn init_ap(cpu_id: usize, kernel_stack_top: usize) {
         let _data_selector = tables.gdt.append(Descriptor::kernel_data_segment());
         let _user_code_selector = tables.gdt.append(Descriptor::user_code_segment());
         let _user_data_selector = tables.gdt.append(Descriptor::user_data_segment());
-        let tss_selector = tables.gdt.append(Descriptor::tss_segment(&tables.tss));
+        let tss_selector = tables
+            .gdt
+            .append(Descriptor::tss_segment_unchecked(&raw const tables.tss));
         tables.gdt.load();
 
         CS::set_reg(code_selector);
         DS::set_reg(SegmentSelector(0));
         ES::set_reg(SegmentSelector(0));
         SS::set_reg(SegmentSelector(0));
+        FS::set_reg(SegmentSelector(0));
+        GS::set_reg(SegmentSelector(0));
+        FsBase::write(VirtAddr::zero());
+        GsBase::write(VirtAddr::zero());
         load_tss(tss_selector);
     }
 }
