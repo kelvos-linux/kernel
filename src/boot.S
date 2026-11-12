@@ -1,4 +1,3 @@
-
 .section .multiboot2,"a"
 .balign 8
 
@@ -44,7 +43,7 @@ _start:
     # Clear page tables
     movl $pml4_table, %edi
     xorl %eax, %eax
-    movl $(6144), %ecx
+    movl $(PAGE_SIZE * (2 + BOOT_DIRECTORY_COUNT) / 4), %ecx
     rep stosl
 
     # PML4[0] -> PDPT
@@ -57,15 +56,15 @@ _start:
     orl $3, %eax
     movl %eax, pdpt_table
 
-    movl $(pd_tables + 4096), %eax
+    movl $(pd_tables + PAGE_SIZE), %eax
     orl $3, %eax
     movl %eax, pdpt_table + 8
 
-    movl $(pd_tables + 8192), %eax
+    movl $(pd_tables + 2 * PAGE_SIZE), %eax
     orl $3, %eax
     movl %eax, pdpt_table + 16
 
-    movl $(pd_tables + 12288), %eax
+    movl $(pd_tables + 3 * PAGE_SIZE), %eax
     orl $3, %eax
     movl %eax, pdpt_table + 24
 
@@ -82,7 +81,7 @@ map_pages:
     movl $0, 4(%edi,%ecx,8)
 
     incl %ecx
-    cmpl $2048, %ecx
+    cmpl $BOOT_LARGE_PAGE_COUNT, %ecx
     jne map_pages
 
     # Enable PAE and SSE support
@@ -152,16 +151,16 @@ gdt64_ptr:
 
 
 .section .bss,"aw",@nobits
-.balign 4096
+.balign PAGE_SIZE
 
 pml4_table:
-    .skip 4096
+    .skip PAGE_SIZE
 
 pdpt_table:
-    .skip 4096
+    .skip PAGE_SIZE
 
 pd_tables:
-    .skip 16384
+    .skip PAGE_SIZE * BOOT_DIRECTORY_COUNT
 
 .balign 16
 

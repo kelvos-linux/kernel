@@ -11,7 +11,7 @@ use x86_64::{
 
 use crate::mm::{frame::FrameAllocator, paging::PagingManager};
 
-const PAGE_SIZE: usize = 4096;
+const PAGE_SIZE: usize = kelvos_shared_ring::layout::PAGE_SIZE as usize;
 const ELF_HEADER_SIZE: usize = 64;
 const PROGRAM_HEADER_SIZE: usize = 56;
 

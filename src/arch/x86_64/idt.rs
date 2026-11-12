@@ -140,7 +140,7 @@ fn validate_return(cs: u64, ss: u64, rip: u64, rsp: u64) {
 
     // IRET can fault in ring 0 if the user left a noncanonical RSP.
     let selectors = gdt::ring3_selectors();
-    const USER_LIMIT: u64 = 1 << 47;
+    use kelvos_shared_ring::layout::USER_LIMIT;
     if cs != u64::from(selectors.code.0)
         || ss != u64::from(selectors.data.0)
         || rip >= USER_LIMIT

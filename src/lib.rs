@@ -17,6 +17,24 @@ use core::panic::PanicInfo;
 use kelvos_shared_ring::MAX_TASKS;
 use x86_64::instructions::hlt;
 
+// Export absolute link-time symbols and assemble the bootstrap with the same
+// constants the Rust paging and frame allocator code uses.
+core::arch::global_asm!(
+    ".global KERNEL_BASE, PAGE_SIZE, LAPIC_DEFAULT",
+    ".equ KERNEL_BASE, {kernel_base}",
+    ".equ PAGE_SIZE, {page_size}",
+    ".equ LAPIC_DEFAULT, {lapic_default}",
+    ".equ BOOT_DIRECTORY_COUNT, {directories}",
+    ".equ BOOT_LARGE_PAGE_COUNT, {large_pages}",
+    include_str!("boot.S"),
+    kernel_base = const kelvos_shared_ring::layout::KERNEL_BASE,
+    page_size = const kelvos_shared_ring::layout::PAGE_SIZE,
+    lapic_default = const kelvos_shared_ring::layout::LAPIC_DEFAULT,
+    directories = const kelvos_shared_ring::layout::BOOT_DIRECTORY_COUNT,
+    large_pages = const kelvos_shared_ring::layout::BOOT_LARGE_PAGE_COUNT,
+    options(att_syntax)
+);
+
 const MULTIBOOT2_MAGIC: u32 = 0x36D76289;
 
 unsafe extern "C" {
@@ -79,7 +97,7 @@ pub extern "C" fn rust_entry(magic: u32, boot_info_address: u32) -> ! {
     let probe_frame = frame_allocator
         .alloc_frame()
         .expect("physical frame allocator validation failed");
-    if probe_frame.start_address().as_u64() < 0x10_0000 {
+    if probe_frame.start_address().as_u64() < kelvos_shared_ring::layout::LOW_RESERVED_END {
         panic!("physical frame allocator returned reserved low memory");
     }
     frame_allocator.free_frame(probe_frame);

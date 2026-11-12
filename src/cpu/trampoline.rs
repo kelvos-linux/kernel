@@ -1,10 +1,20 @@
 use core::arch::global_asm;
+use kelvos_shared_ring::layout::{
+    AP_STACK_TOP, AP_TRAMPOLINE_BASE, AP_TRAMPOLINE_MAX_SIZE, PAGE_SIZE,
+};
 
 use crate::arch::x86_64::percpu::PerCpu;
 
-global_asm!(include_str!("trampoline.S"), options(att_syntax));
+global_asm!(
+    ".equ AP_TRAMPOLINE_BASE, {base}",
+    ".equ AP_STACK_TOP, {stack}",
+    include_str!("trampoline.S"),
+    base = const AP_TRAMPOLINE_BASE,
+    stack = const AP_STACK_TOP,
+    options(att_syntax)
+);
 
-const TRAMPOLINE_ADDRESS: usize = 0x8000;
+const TRAMPOLINE_ADDRESS: usize = AP_TRAMPOLINE_BASE as usize;
 const STARTUP_VECTOR: u8 = (TRAMPOLINE_ADDRESS >> 12) as u8;
 
 #[repr(C)]
@@ -29,13 +39,13 @@ pub fn install(cpu_id: usize, apic_id: u32, pc: &'static PerCpu) -> Result<(), &
     let start = core::ptr::addr_of!(ap_trampoline_start);
     let end = core::ptr::addr_of!(ap_trampoline_end);
     let length = end as usize - start as usize;
-    if length > 0x0f00 {
+    if length > AP_TRAMPOLINE_MAX_SIZE as usize {
         return Err("AP startup trampoline leaves no room for its real-mode stack");
     }
 
     let boot_data = unsafe { core::ptr::read_volatile(0x40e as *const u16) };
     let ebda = usize::from(boot_data) << 4;
-    if ebda != 0 && TRAMPOLINE_ADDRESS + 4096 >= ebda {
+    if ebda != 0 && TRAMPOLINE_ADDRESS + PAGE_SIZE as usize >= ebda {
         return Err("AP startup trampoline would overlap the EBDA");
     }
 
