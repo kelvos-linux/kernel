@@ -15,6 +15,8 @@ pub struct BootMemoryMap {
     pub boot_info_len: u64,
     pub user_module_start: u64,
     pub user_module_len: u64,
+    pub child_module_start: u64,
+    pub child_module_len: u64,
 }
 
 #[repr(C)]
@@ -83,6 +85,7 @@ pub fn init(boot_info_address: u32) -> Result<BootMemoryMap, &'static str> {
     let mut offset = 8usize;
     let mut found_map = false;
     let mut user_module = None;
+    let mut child_module = None;
 
     while offset.checked_add(8).is_some_and(|end| end <= total_size) {
         let tag = unsafe { core::ptr::read_unaligned(base.add(offset).cast::<TagHeader>()) };
@@ -153,14 +156,17 @@ pub fn init(boot_info_address: u32) -> Result<BootMemoryMap, &'static str> {
                 .position(|byte| *byte == 0)
                 .ok_or("unterminated Multiboot2 module command line")?;
 
-            if &command[..command_len] == b"user_init" {
-                if user_module.is_some() {
-                    return Err("multiple user_init Multiboot2 modules");
+            let destination = match &command[..command_len] {
+                b"user_init" => Some(&mut user_module),
+                b"user_child" => Some(&mut child_module),
+                _ => None,
+            };
+            if let Some(destination) = destination {
+                if module_start >= module_end
+                    || destination.replace((module_start, module_end)).is_some()
+                {
+                    return Err("invalid or duplicate user image module");
                 }
-                if module_start >= module_end || u64::from(module_end) > (1u64 << 32) {
-                    return Err("invalid user_init Multiboot2 module range");
-                }
-                user_module = Some((module_start, module_end));
             }
         }
 
@@ -180,11 +186,15 @@ pub fn init(boot_info_address: u32) -> Result<BootMemoryMap, &'static str> {
     }
     let (module_start, module_end) = user_module.ok_or("user_init Multiboot2 module not found")?;
 
+    let (child_start, child_end) = child_module.ok_or("user_child Multiboot2 module not found")?;
+
     Ok(BootMemoryMap {
         regions: bootinfo::normalize(&raw[..raw_count]),
         boot_info_start: boot_info_address as u64,
         boot_info_len: total_size as u64,
         user_module_start: u64::from(module_start),
         user_module_len: u64::from(module_end - module_start),
+        child_module_start: u64::from(child_start),
+        child_module_len: u64::from(child_end - child_start),
     })
 }

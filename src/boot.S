@@ -87,6 +87,7 @@ map_pages:
 
     # Enable PAE and SSE support
     movl %cr4, %eax
+    andl $0xfffaffff, %eax # Disable FSGSBASE and OSXSAVE
     orl $0x620, %eax
     movl %eax, %cr4
 
@@ -102,7 +103,7 @@ map_pages:
 
     # Enable paging and write protection
     movl %cr0, %eax
-    andl $0xFFFFFFFB, %eax
+    andl $0xFFFFFFF3, %eax
     orl $0x80010002, %eax
     movl %eax, %cr0
 

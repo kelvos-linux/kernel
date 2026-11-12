@@ -14,7 +14,6 @@ struct StartupData {
     apic_id: u32,
     _reserved: u32,
     stack_top: u64,
-    per_cpu: u64,
     entry: u64,
 }
 
@@ -53,7 +52,6 @@ pub fn install(cpu_id: usize, apic_id: u32, pc: &'static PerCpu) -> Result<(), &
     data.cpu_id = cpu_id as u32;
     data.apic_id = apic_id;
     data.stack_top = pc.idle_stack.load(core::sync::atomic::Ordering::Acquire) as u64;
-    data.per_cpu = pc as *const PerCpu as u64;
     data.entry = ap_entry as *const () as usize as u64;
 
     let gdtr_offset = core::ptr::addr_of!(ap_trampoline_gdtr) as usize - start as usize;
