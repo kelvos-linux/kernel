@@ -12,7 +12,7 @@
 .set AP_DATA_OFFSET, ap_trampoline_data - ap_trampoline_start
 .set AP_PM_OFFSET, ap_trampoline_pm_entry - ap_trampoline_start
 .set AP_LM_OFFSET, ap_trampoline_lm_entry - ap_trampoline_start
-.set AP_DATA_PHYS, 0x8000 + AP_DATA_OFFSET
+.set AP_DATA_PHYS, AP_TRAMPOLINE_BASE + AP_DATA_OFFSET
 
 ap_trampoline_start:
     cli
@@ -21,7 +21,7 @@ ap_trampoline_start:
     movw %ax, %ds
     movw %ax, %es
     movw %ax, %ss
-    movw $0x8ff0, %sp
+    movw $AP_STACK_TOP, %sp
     lgdt %cs:AP_GDTR_OFFSET
     movl %cs:AP_DATA_OFFSET, %eax
     movl %eax, %cr3
@@ -35,7 +35,7 @@ ap_trampoline_start:
     orl $1, %eax
     movl %eax, %cr0
     pushl $0x08
-    pushl $(0x8000 + AP_PM_OFFSET)
+    pushl $(AP_TRAMPOLINE_BASE + AP_PM_OFFSET)
     .byte 0x66, 0xcb
 
 .code32
@@ -55,7 +55,7 @@ ap_trampoline_pm_entry:
     orl $0x80010002, %eax
     movl %eax, %cr0
     pushl $0x18
-    pushl $(0x8000 + AP_LM_OFFSET)
+    pushl $(AP_TRAMPOLINE_BASE + AP_LM_OFFSET)
     lret
 
 .code64

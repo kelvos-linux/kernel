@@ -1,3 +1,4 @@
+use kelvos_shared_ring::layout::{HEAP_SIZE, HEAP_START};
 use linked_list_allocator::LockedHeap;
 use x86_64::VirtAddr;
 
@@ -5,16 +6,13 @@ use crate::mm::{frame::FrameAllocator, paging::PagingManager};
 
 use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
 
-pub const HEAP_START: usize = 0xFFFF_FFFF_C000_0000;
-pub const HEAP_SIZE: usize = 16 * 1024 * 1024;
-
 #[global_allocator]
 static ALLOCATOR: LockedHeap = LockedHeap::empty();
 
 pub fn init(mapper: &mut PagingManager, alloc: &mut FrameAllocator) {
     unsafe {
         mapper
-            .map_range(VirtAddr::new(HEAP_START as u64), HEAP_SIZE, alloc)
+            .map_range(VirtAddr::new(HEAP_START), HEAP_SIZE, alloc)
             .expect("heap mapping failed");
     }
     unsafe {

@@ -24,7 +24,7 @@ const APIC_OFFSET_TIMER_CURRENT: u32 = 0x390;
 const APIC_SVR_ENABLE: u32 = 1 << 8;
 const ICR_DELIVERY_PENDING: u32 = 1 << 12;
 
-static APIC_BASE: AtomicU64 = AtomicU64::new(0xfee0_0000);
+static APIC_BASE: AtomicU64 = AtomicU64::new(kelvos_shared_ring::layout::LAPIC_DEFAULT);
 static APIC_READY: AtomicBool = AtomicBool::new(false);
 
 fn apic_read(offset: u32) -> u32 {
@@ -40,7 +40,7 @@ fn apic_write(offset: u32, value: u32) {
 pub fn init(local_apic_address: u64) -> Result<u32, &'static str> {
     if local_apic_address == 0
         || local_apic_address & 0xfff != 0
-        || local_apic_address >= (1u64 << 32)
+        || local_apic_address >= kelvos_shared_ring::layout::BOOT_IDENTITY_END
     {
         return Err("invalid local APIC physical address");
     }

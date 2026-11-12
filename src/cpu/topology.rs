@@ -54,7 +54,7 @@ pub static TOPOLOGY: spin::Once<CpuTopology> = spin::Once::new();
 const MULTIBOOT2_TAG_ACPI_OLD: u32 = 14;
 const MULTIBOOT2_TAG_ACPI_NEW: u32 = 15;
 const MULTIBOOT2_TAG_END: u32 = 0;
-const LAPIC_ADDRESS_DEFAULT: u64 = 0xfee0_0000;
+const LAPIC_ADDRESS_DEFAULT: u64 = kelvos_shared_ring::layout::LAPIC_DEFAULT;
 
 #[repr(C)]
 struct TagHeader {
@@ -119,7 +119,7 @@ fn table_checksum_is_valid(address: u64, length: usize) -> bool {
     let Some(end) = address.checked_add(length as u64) else {
         return false;
     };
-    if end > (1u64 << 32) {
+    if end > kelvos_shared_ring::layout::BOOT_IDENTITY_END {
         return false;
     }
     let bytes = unsafe { core::slice::from_raw_parts(address as *const u8, length) };
@@ -127,7 +127,7 @@ fn table_checksum_is_valid(address: u64, length: usize) -> bool {
 }
 
 fn parse_madt(address: u64, bsp_apic_id: u32) -> Option<CpuTopology> {
-    if address == 0 || address.checked_add(44)? > (1u64 << 32) {
+    if address == 0 || address.checked_add(44)? > kelvos_shared_ring::layout::BOOT_IDENTITY_END {
         return None;
     }
     let header = unsafe { core::slice::from_raw_parts(address as *const u8, 44) };
@@ -182,7 +182,7 @@ fn parse_madt(address: u64, bsp_apic_id: u32) -> Option<CpuTopology> {
 
     if topology.local_apic_address == 0
         || topology.local_apic_address & 0xfff != 0
-        || topology.local_apic_address >= (1u64 << 32)
+        || topology.local_apic_address >= kelvos_shared_ring::layout::BOOT_IDENTITY_END
     {
         return None;
     }
@@ -198,7 +198,7 @@ fn parse_madt(address: u64, bsp_apic_id: u32) -> Option<CpuTopology> {
 }
 
 fn parse_root_table(address: u64, bsp_apic_id: u32) -> Option<CpuTopology> {
-    if address == 0 || address.checked_add(36)? > (1u64 << 32) {
+    if address == 0 || address.checked_add(36)? > kelvos_shared_ring::layout::BOOT_IDENTITY_END {
         return None;
     }
     let header = unsafe { core::slice::from_raw_parts(address as *const u8, 36) };
@@ -209,7 +209,7 @@ fn parse_root_table(address: u64, bsp_apic_id: u32) -> Option<CpuTopology> {
     };
     let length = usize::try_from(read_u32(header, 4)?).ok()?;
     if length < 36
-        || address.checked_add(length as u64)? > (1u64 << 32)
+        || address.checked_add(length as u64)? > kelvos_shared_ring::layout::BOOT_IDENTITY_END
         || (length - 36) % entry_width != 0
         || !table_checksum_is_valid(address, length)
     {
@@ -237,7 +237,9 @@ fn detect(boot_info_address: u32, features: CpuFeatures) -> CpuTopology {
     let boot_info = boot_info_address as u64 as *const u8;
     let total_size = unsafe { core::ptr::read_unaligned(boot_info.cast::<u32>()) } as usize;
 
-    if total_size >= 8 && (boot_info_address as u64).saturating_add(total_size as u64) <= 1u64 << 32
+    if total_size >= 8
+        && (boot_info_address as u64).saturating_add(total_size as u64)
+            <= kelvos_shared_ring::layout::BOOT_IDENTITY_END
     {
         if let Some(rsdp) = find_rsdp(boot_info, total_size) {
             let revision = rsdp.get(15).copied().unwrap_or(0);

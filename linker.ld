@@ -1,4 +1,3 @@
-
 OUTPUT_FORMAT(elf64-x86-64)
 ENTRY(_start)
 
@@ -11,7 +10,7 @@ PHDRS
 
 SECTIONS
 {
-    . = 1M;
+    . = KERNEL_BASE;
     __kernel_start = .;
 
     .multiboot2 ALIGN(8) :
@@ -19,29 +18,29 @@ SECTIONS
         KEEP(*(.multiboot2))
     } :text
 
-    .text ALIGN(4K) :
+    .text ALIGN(PAGE_SIZE) :
     {
         *(.text.boot)
         *(.text .text.*)
     } :text
 
-    .rodata ALIGN(4K) :
+    .rodata ALIGN(PAGE_SIZE) :
     {
         *(.rodata .rodata.*)
     } :rodata
 
-    .data ALIGN(4K) :
+    .data ALIGN(PAGE_SIZE) :
     {
         *(.data .data.*)
         *(.got .got.*)
     } :data
 
-    .bss ALIGN(4K) (NOLOAD) :
+    .bss ALIGN(PAGE_SIZE) (NOLOAD) :
     {
         *(COMMON)
         *(.bss .bss.*)
     } :data
-    __kernel_end = ALIGN(4K);
+    __kernel_end = ALIGN(PAGE_SIZE);
 
     /DISCARD/ :
     {
@@ -50,3 +49,5 @@ SECTIONS
         *(.note*)
     }
 }
+
+ASSERT(__kernel_end <= LAPIC_DEFAULT, "kernel image exceeds the bootstrap RAM window")

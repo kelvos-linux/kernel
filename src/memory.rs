@@ -76,7 +76,9 @@ pub fn init(boot_info_address: u32) -> Result<BootMemoryMap, &'static str> {
     if total_size < core::mem::size_of::<BootInfoHeader>() {
         return Err("invalid Multiboot2 info size");
     }
-    if (boot_info_address as u64).saturating_add(total_size as u64) > (1u64 << 32) {
+    if (boot_info_address as u64).saturating_add(total_size as u64)
+        > kelvos_shared_ring::layout::BOOT_IDENTITY_END
+    {
         return Err("Multiboot2 info structure exceeds the boot identity map");
     }
 

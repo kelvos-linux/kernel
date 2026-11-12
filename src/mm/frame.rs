@@ -6,8 +6,8 @@ use x86_64::{
     PhysAddr,
 };
 
-pub const PAGE_SIZE: u64 = 4096;
-const MAX_PHYSICAL_ADDRESS: u64 = 1 << 32;
+pub use kelvos_shared_ring::layout::PAGE_SIZE;
+use kelvos_shared_ring::layout::{BOOT_IDENTITY_END as MAX_PHYSICAL_ADDRESS, LOW_RESERVED_END};
 const MAX_FRAMES: usize = (MAX_PHYSICAL_ADDRESS / PAGE_SIZE) as usize;
 const BITMAP_WORDS: usize = MAX_FRAMES.div_ceil(u64::BITS as usize);
 
@@ -86,7 +86,7 @@ impl FrameAllocator {
         {
             allocator.reserve_range(region.start, region.len);
         }
-        allocator.reserve_range(0, 0x10_0000);
+        allocator.reserve_range(0, LOW_RESERVED_END);
         for &(start, len) in reserved_ranges {
             allocator.reserve_range(start, len);
         }
